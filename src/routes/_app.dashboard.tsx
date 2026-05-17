@@ -2,43 +2,21 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { Activity, AlertTriangle, Clock } from "lucide-react";
 import {
-  AreaChart,
-  Area,
-  ResponsiveContainer,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
-  PieChart,
-  Pie,
-  Cell,
-  LineChart,
-  Line,
-  BarChart,
-  Bar,
+  AreaChart, Area, ResponsiveContainer, XAxis, YAxis, Tooltip,
+  CartesianGrid, PieChart, Pie, Cell, LineChart, Line, BarChart, Bar,
 } from "recharts";
 import { supabase } from "@/integrations/supabase/client";
 import { severityPillClass, ATTACK_TYPES } from "@/lib/mockAttacks";
 
 export const Route = createFileRoute("/_app/dashboard")({
   component: Dashboard,
-  head: () => ({ meta: [{ title: "Dashboard — CyberShield" }] }),
+  head: () => ({ meta: [{ title: "Dashboard – CyberShield" }] }),
 });
 
 const CHART_COLORS = ["#5fb6ff", "#7fd0ff", "#5dd8b8", "#f5c870", "#f08585", "#a78bfa"];
 
-function StatCard({
-  icon: Icon,
-  label,
-  value,
-  hint,
-  accent = "primary",
-}: {
-  icon: any;
-  label: string;
-  value: string | number;
-  hint?: string;
-  accent?: string;
+function StatCard({ icon: Icon, label, value, hint, accent = "primary" }: {
+  icon: any; label: string; value: string | number; hint?: string; accent?: string;
 }) {
   return (
     <div className="glass relative overflow-hidden rounded-2xl p-5">
@@ -48,9 +26,7 @@ function StatCard({
           <div className="mt-2 text-3xl font-semibold tracking-tight">{value}</div>
           {hint && <div className="mt-1 text-xs text-muted-foreground">{hint}</div>}
         </div>
-        <div
-          className={`grid h-10 w-10 place-items-center rounded-xl bg-${accent}/10 text-${accent}`}
-        >
+        <div className={`grid h-10 w-10 place-items-center rounded-xl bg-${accent}/10 text-${accent}`}>
           <Icon className="h-5 w-5" />
         </div>
       </div>
@@ -59,7 +35,6 @@ function StatCard({
 }
 
 function Dashboard() {
-  const [packets, setPackets] = useState(0);
   const [dbAttacks, setDbAttacks] = useState<any[]>([]);
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
 
@@ -78,35 +53,33 @@ function Dashboard() {
       .from("detection_logs")
       .select("*")
       .order("detected_at", { ascending: false })
-      .limit(200)
+      .limit(500)
       .then(({ data }) => setDbAttacks(data ?? []));
 
     const channel = supabase
       .channel("detection_logs_changes")
-      .on(
-        "postgres_changes",
+      .on("postgres_changes",
         { event: "INSERT", schema: "public", table: "detection_logs" },
-        (payload) => setDbAttacks((prev) => [payload.new, ...prev].slice(0, 200)),
-      )
+        (payload) => setDbAttacks((prev) => [payload.new, ...prev].slice(0, 500)))
       .subscribe();
 
-    return () => {
-      clearInterval(timer);
-      supabase.removeChannel(channel);
-    };
+    return () => { clearInterval(timer); supabase.removeChannel(channel); };
   }, []);
 
-  const all = useMemo(() => [...dbAttacks].slice(0, 200), [dbAttacks]);
+  const all = useMemo(() => [...dbAttacks].slice(0, 500), [dbAttacks]);
+
+  const attacksOnly = useMemo(() => all.filter((r) => r.status !== "normal"), [all]);
   const detected = all.length;
+  const attackCount = attacksOnly.length;
 
   const durationText = useMemo(() => {
-    const diffInMinutes = Math.floor((currentTime.getTime() - startTime.getTime()) / 60000);
-    if (diffInMinutes < 1) return "Just started";
-    if (diffInMinutes < 60) return `Last ${diffInMinutes} minutes`;
-    const hours = Math.floor(diffInMinutes / 60);
-    return `Last ${hours} hour${hours > 1 ? 's' : ''}`;
+    const diff = Math.floor((currentTime.getTime() - startTime.getTime()) / 60000);
+    if (diff < 1) return "Just started";
+    if (diff < 60) return `Last ${diff} minutes`;
+    return `Last ${Math.floor(diff / 60)} hour${Math.floor(diff / 60) > 1 ? "s" : ""}`;
   }, [startTime, currentTime]);
 
+  // ── Attacks Over Time ─────────────────────────────────────────
   const overTime = useMemo(() => {
     const buckets: Record<string, number> = {};
     for (let i = 11; i >= 0; i--) {
@@ -114,52 +87,76 @@ function Dashboard() {
       const k = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       buckets[k] = 0;
     }
-    all.forEach((a) => {
-      const t = new Date(a.detected_at);
-      const k = t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    attacksOnly.forEach((a) => {
+      const k = new Date(a.detected_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       if (k in buckets) buckets[k]++;
     });
     return Object.entries(buckets).map(([time, count]) => ({ time, count }));
-  }, [all]);
+  }, [attacksOnly]);
 
+  // ── Attack Distribution ───────────────────────────────────────
   const distribution = useMemo(() => {
     const m: Record<string, number> = {};
     ATTACK_TYPES.forEach((t) => (m[t] = 0));
-    all.forEach((a) => (m[a.attack_type] = (m[a.attack_type] || 0) + 1));
-    return Object.entries(m)
-      .filter(([, v]) => v > 0)
-      .map(([name, value]) => ({ name, value }));
-  }, [all]);
+    attacksOnly.forEach((a) => (m[a.attack_type] = (m[a.attack_type] || 0) + 1));
+    return Object.entries(m).filter(([, v]) => v > 0).map(([name, value]) => ({ name, value }));
+  }, [attacksOnly]);
 
+  // ── Anomaly Score — REAL DATA ─────────────────────────────────
+  // بنحسب نسبة الـ attacks في كل 10 دقايق آخر 200 دقيقة
   const anomaly = useMemo(() => {
     if (all.length === 0) return [];
-    return Array.from({ length: 20 }, (_, i) => ({
-      t: i,
-      score: Math.round(40 + Math.sin(i / 2) * 15 + Math.random() * 30),
-    }));
-  }, [all.length]);
-
-  const sources = useMemo(() => {
-    const m: Record<string, number> = {};
-    all.forEach((a: any) => {
-      const c = a.source_country || "Unknown";
-      m[c] = (m[c] || 0) + 1;
+    const BUCKETS = 20;
+    const WINDOW_MIN = 10;
+    const now = Date.now();
+    return Array.from({ length: BUCKETS }, (_, i) => {
+      const bucketEnd = now - (BUCKETS - 1 - i) * WINDOW_MIN * 60 * 1000;
+      const bucketStart = bucketEnd - WINDOW_MIN * 60 * 1000;
+      const inBucket = all.filter((r) => {
+        const t = new Date(r.detected_at).getTime();
+        return t >= bucketStart && t < bucketEnd;
+      });
+      const attacksInBucket = inBucket.filter((r) => r.status !== "normal").length;
+      const total = inBucket.length;
+      // score = نسبة الـ attacks * 100، لو مفيش بيانات نحط 0
+      const score = total > 0 ? Math.round((attacksInBucket / total) * 100) : 0;
+      const label = new Date(bucketEnd).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      return { t: label, score };
     });
-    return Object.entries(m)
-      .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 8);
   }, [all]);
 
+  // ── Response Efficiency — REAL DATA ───────────────────────────
+  // بنحسب متوسط الـ confidence لكل attack type (confidence عالية = detection سريع وواثق)
   const efficiency = useMemo(() => {
-    if (all.length === 0) return [];
-    return Array.from({ length: 10 }, (_, i) => ({
-      label: `T-${10 - i}`,
-      sec: Math.round((0.4 + Math.random() * 1.8) * 100) / 100,
+    if (attacksOnly.length === 0) return [];
+    // آخر 10 attacks مع الـ confidence بتاعهم
+    return attacksOnly.slice(0, 10).reverse().map((r, i) => ({
+      label: `#${i + 1}`,
+      confidence: r.confidence ? Math.round(r.confidence * 100) : 0,
+      type: r.attack_type?.split("_")[0] || "Unknown",
     }));
-  }, [all.length]);
+  }, [attacksOnly]);
 
-  const last = all[0];
+  // ── Attack Sources ────────────────────────────────────────────
+  const sources = useMemo(() => {
+    const m: Record<string, number> = {};
+    attacksOnly.forEach((a: any) => {
+      const c = a.source_ip || "Unknown";
+      m[c] = (m[c] || 0) + 1;
+    });
+    return Object.entries(m).map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value).slice(0, 8);
+  }, [attacksOnly]);
+
+  // ── Avg confidence ────────────────────────────────────────────
+  const avgConfidence = useMemo(() => {
+    const withConf = attacksOnly.filter((r) => r.confidence != null);
+    if (!withConf.length) return null;
+    const avg = withConf.reduce((s, r) => s + r.confidence, 0) / withConf.length;
+    return Math.round(avg * 100);
+  }, [attacksOnly]);
+
+  const last = attacksOnly[0];
 
   return (
     <main className="mx-auto max-w-7xl px-6 py-8">
@@ -168,29 +165,17 @@ function Dashboard() {
         <p className="text-sm text-muted-foreground">Live overview as of {currentTime.toLocaleTimeString()}</p>
       </div>
 
+      {/* stat cards */}
       <div className="grid gap-4 md:grid-cols-3">
-        <StatCard
-          icon={Activity}
-          label="Packets Analyzed"
-          value={detected.toLocaleString()}
-          hint="Live stream"
-        />
-        <StatCard
-          icon={AlertTriangle}
-          label="Attacks Detected"
-          value={detected}
-          hint={durationText}
-          accent="destructive"
-        />
-        <StatCard
-          icon={Clock}
-          label="Avg Response"
-          value={detected > 0 ? "0.92s" : "0.00s"}
-          hint={detected > 0 ? "⚡ Optimal Performance" : "System Standby"}
-          accent="accent"
-        />
+        <StatCard icon={Activity} label="Total Logs" value={detected.toLocaleString()} hint="All traffic" />
+        <StatCard icon={AlertTriangle} label="Attacks Detected" value={attackCount} hint={durationText} accent="destructive" />
+        <StatCard icon={Clock} label="Avg Confidence"
+          value={avgConfidence != null ? `${avgConfidence}%` : "—"}
+          hint={avgConfidence != null ? "Model certainty on attacks" : "No attacks yet"}
+          accent="accent" />
       </div>
 
+      {/* attacks over time + last detection */}
       <div className="mt-4 grid gap-4 lg:grid-cols-3">
         <div className="glass rounded-2xl p-5 lg:col-span-2">
           <h3 className="mb-1 text-base font-medium">Attacks Over Time</h3>
@@ -207,20 +192,8 @@ function Dashboard() {
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                 <XAxis dataKey="time" stroke="rgba(255,255,255,0.4)" fontSize={11} />
                 <YAxis stroke="rgba(255,255,255,0.4)" fontSize={11} />
-                <Tooltip
-                  contentStyle={{
-                    background: "rgba(20,30,50,0.95)",
-                    border: "1px solid rgba(255,255,255,0.1)",
-                    borderRadius: 8,
-                  }}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="count"
-                  stroke="#5fb6ff"
-                  fill="url(#ga)"
-                  strokeWidth={2}
-                />
+                <Tooltip contentStyle={{ background: "rgba(20,30,50,0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }} />
+                <Area type="monotone" dataKey="count" stroke="#5fb6ff" fill="url(#ga)" strokeWidth={2} />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -234,25 +207,24 @@ function Dashboard() {
               <Row k="Type" v={<span className="font-medium">{last.attack_type}</span>} />
               <Row k="Source" v={<span className="font-mono text-sm">{last.source_ip}</span>} />
               <Row k="Time" v={new Date(last.detected_at).toLocaleTimeString()} />
-              <Row
-                k="Severity"
-                v={
-                  <span
-                    className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${severityPillClass(last.severity)}`}
-                  >
-                    {last.severity}
-                  </span>
-                }
-              />
-              <Row k="Confidence" v={`${last.confidence}%`} />
+              <Row k="Severity" v={
+                <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${severityPillClass(last.severity)}`}>
+                  {last.severity}
+                </span>} />
+              <Row k="Confidence" v={last.confidence ? `${Math.round(last.confidence * 100)}%` : "—"} />
+              {last.solution && (
+                <div className="mt-2 rounded-lg bg-white/5 p-3 text-xs text-muted-foreground leading-relaxed">
+                  💡 {last.solution}
+                </div>
+              )}
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">No events yet.</p>
+            <p className="text-sm text-muted-foreground">No attacks yet.</p>
           )}
         </div>
       </div>
 
-      {/* ... باقي الكود كما هو بدون أي تغيير في الـ UI ... */}
+      {/* distribution + anomaly */}
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <div className="glass rounded-2xl p-5">
           <h3 className="mb-1 text-base font-medium">Attack Type Distribution</h3>
@@ -260,14 +232,7 @@ function Dashboard() {
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
-                <Pie
-                  data={distribution}
-                  dataKey="value"
-                  nameKey="name"
-                  innerRadius={45}
-                  outerRadius={88}
-                  paddingAngle={2}
-                >
+                <Pie data={distribution} dataKey="value" nameKey="name" innerRadius={45} outerRadius={88} paddingAngle={2}>
                   {distribution.map((_, i) => (
                     <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} stroke="rgba(10,15,30,0.6)" strokeWidth={1.5} />
                   ))}
@@ -286,62 +251,89 @@ function Dashboard() {
                 <span className="font-medium text-muted-foreground tabular-nums">{d.value}</span>
               </div>
             ))}
+            {distribution.length === 0 && <p className="text-sm text-muted-foreground col-span-2">No attacks yet.</p>}
           </div>
         </div>
 
+        {/* ── Anomaly Score — REAL ── */}
         <div className="glass rounded-2xl p-5">
           <h3 className="mb-1 text-base font-medium">Anomaly Score Timeline</h3>
-          <p className="mb-4 text-xs text-muted-foreground">Real-time risk signal</p>
+          <p className="mb-4 text-xs text-muted-foreground">
+            % of traffic classified as attack per 10-minute window
+          </p>
           <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={anomaly}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
-                <XAxis dataKey="t" stroke="rgba(255,255,255,0.4)" fontSize={11} />
-                <YAxis stroke="rgba(255,255,255,0.4)" fontSize={11} domain={[0, 100]} />
-                <Tooltip contentStyle={{ background: "rgba(20,30,50,0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }} />
-                <Line type="monotone" dataKey="score" stroke="#7fd0ff" strokeWidth={2.5} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
+            {anomaly.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={anomaly}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                  <XAxis dataKey="t" stroke="rgba(255,255,255,0.4)" fontSize={10} interval={4} />
+                  <YAxis stroke="rgba(255,255,255,0.4)" fontSize={11} domain={[0, 100]}
+                    tickFormatter={(v) => `${v}%`} />
+                  <Tooltip
+                    formatter={(v: any) => [`${v}%`, "Attack ratio"]}
+                    contentStyle={{ background: "rgba(20,30,50,0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }} />
+                  <Line type="monotone" dataKey="score" stroke="#7fd0ff" strokeWidth={2.5} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                No data yet — run monitor or upload CSV
+              </div>
+            )}
           </div>
         </div>
       </div>
 
+      {/* sources + efficiency */}
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <div className="glass rounded-2xl p-5">
-          <h3 className="mb-1 text-base font-medium">Attack Sources</h3>
-          <p className="mb-4 text-xs text-muted-foreground">Top origin geographies</p>
+          <h3 className="mb-1 text-base font-medium">Top Attack Sources</h3>
+          <p className="mb-4 text-xs text-muted-foreground">IPs with most detections</p>
           <div className="space-y-2.5">
             {sources.map((s, i) => {
               const max = sources[0]?.value || 1;
               return (
                 <div key={s.name}>
                   <div className="mb-1 flex justify-between text-sm">
-                    <span>{s.name}</span>
+                    <span className="font-mono text-xs">{s.name}</span>
                     <span className="text-muted-foreground">{s.value}</span>
                   </div>
                   <div className="h-2 overflow-hidden rounded-full bg-white/5">
-                    <div className="h-full rounded-full" style={{ width: `${(s.value / max) * 100}%`, background: CHART_COLORS[i % CHART_COLORS.length] }} />
+                    <div className="h-full rounded-full"
+                      style={{ width: `${(s.value / max) * 100}%`, background: CHART_COLORS[i % CHART_COLORS.length] }} />
                   </div>
                 </div>
               );
             })}
-            {sources.length === 0 && <p className="text-sm text-muted-foreground">No data yet.</p>}
+            {sources.length === 0 && <p className="text-sm text-muted-foreground">No attacks yet.</p>}
           </div>
         </div>
 
+        {/* ── Detection Confidence — REAL ── */}
         <div className="glass rounded-2xl p-5">
-          <h3 className="mb-1 text-base font-medium">Response Efficiency (sec)</h3>
-          <p className="mb-4 text-xs text-muted-foreground">Lower is better</p>
+          <h3 className="mb-1 text-base font-medium">Detection Confidence</h3>
+          <p className="mb-4 text-xs text-muted-foreground">
+            Model confidence % for last 10 attacks
+          </p>
           <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={efficiency}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
-                <XAxis dataKey="label" stroke="rgba(255,255,255,0.4)" fontSize={11} />
-                <YAxis stroke="rgba(255,255,255,0.4)" fontSize={11} />
-                <Tooltip contentStyle={{ background: "rgba(20,30,50,0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }} />
-                <Bar dataKey="sec" fill="#5dd8b8" radius={[6, 6, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            {efficiency.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={efficiency}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                  <XAxis dataKey="label" stroke="rgba(255,255,255,0.4)" fontSize={11} />
+                  <YAxis stroke="rgba(255,255,255,0.4)" fontSize={11} domain={[0, 100]}
+                    tickFormatter={(v) => `${v}%`} />
+                  <Tooltip
+                    formatter={(v: any, _: any, p: any) => [`${v}% — ${p.payload.type}`, "Confidence"]}
+                    contentStyle={{ background: "rgba(20,30,50,0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }} />
+                  <Bar dataKey="confidence" fill="#5dd8b8" radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                No attacks detected yet
+              </div>
+            )}
           </div>
         </div>
       </div>
