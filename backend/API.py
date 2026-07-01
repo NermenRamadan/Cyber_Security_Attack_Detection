@@ -167,14 +167,24 @@ def run_prediction(binary_features: list, multi_features_dict: dict,
     except Exception:
         binary_confidence = None
 
+    #if is_attack == 0:
+    #    result = {
+    #        "is_attack":   False,
+    #        "attack_type": "Normal",
+    #        "severity":    "None",
+    #        "confidence":  binary_confidence,
+    #        "code":        -1,
+    #        "solution":    "",
+    #    }
     if is_attack == 0:
         result = {
-            "is_attack":   False,
-            "attack_type": "Normal",
-            "severity":    "None",
-            "confidence":  binary_confidence,
-            "code":        -1,
-            "solution":    "",
+            "is_attack":         False,
+            "attack_type":       "Normal",
+            "severity":          "None",
+            "confidence":        binary_confidence,
+            "binary_confidence": binary_confidence,   # ← جديد
+            "code":              -1,
+            "solution":          "",
         }
     else:
         multi_row = {}
@@ -203,14 +213,24 @@ def run_prediction(binary_features: list, multi_features_dict: dict,
         except Exception:
             confidence = None
 
+      # result = {
+      #     "is_attack":   True,
+      #     "attack_type": attack_type,
+      #     "severity":    severity,
+      #     "confidence":  confidence,
+      #     "code":        int(pred_num),
+      #     "solution":    solution,
+      # }
+
         result = {
-            "is_attack":   True,
-            "attack_type": attack_type,
-            "severity":    severity,
-            "confidence":  confidence,
-            "code":        int(pred_num),
-            "solution":    solution,
-        }
+            "is_attack":         True,
+            "attack_type":       attack_type,
+            "severity":          severity,
+            "confidence":        confidence,
+            "binary_confidence": binary_confidence,   # ← جديد
+            "code":              int(pred_num),
+            "solution":          solution,
+        } 
 
     # ── 💾 الحفظ في SQLite بدلاً من Supabase ──────────────────────────
     try:

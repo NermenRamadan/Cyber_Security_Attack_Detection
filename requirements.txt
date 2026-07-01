@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+scikit-learn
+pandas
+numpy
+xgboost
+matplotlib
+scapy
+requests
+httpx
+dotenv
+pyshark

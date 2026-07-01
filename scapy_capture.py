@@ -1,6 +1,20 @@
 """
-scapy_capture.py — CyberShield live packet capture
+scapy_capture_fixed.py — CyberShield live packet capture (FIXED)
 بيبعت الـ 20 binary features + الـ 73 multi features للـ API
+
+=====================================================================
+الفروقات عن النسخة الأصلية (scapy_capture.py):
+
+1. TCP Stream  -> بقى bidirectional (مش اتجاهي) + بيتعمله reset لو الستريم
+   ساكت لفترة طويلة، عشان منوصلش لأرقام ضخمة غريبة عن التدريب.
+
+2. deltatime   -> بقى per-connection (لكل stream/flow لوحده) مش عالمي على
+   كل التراف��ك. ده أقرب لمنطق التدريب (كل CSV كان فيه نوع ترافيك واحد بس).
+
+3. is_browser / is_attack_tool / is_script -> اتسابوا زي ما هما (الموديل
+   مدرّب عليهم كده) لكن دلوقتي فيه تعليق واضح إنهم هيفضلوا صفر مع HTTPS،
+   وده قيد حقيقي مش حاجة ممكن "نصلحها" من غير إعادة تدريب.
+=====================================================================
 """
 import time
 import uuid
@@ -47,30 +61,74 @@ MULTI_FEATURES = [
 ]
 
 # ── State ────────────────────────────────────────────────────────
-last_time       = [time.time()]
-tcp_stream_map  = {}
-stream_id       = [0]
+# [FIX 1+2] بدل last_time[0] العالمي وبدل tcp_stream_map الاتجاهي،
+# بقى عندنا dict واحد لكل "flow" (اتصال) فيه: رقم الستريم + آخر وقت شوفنا
+# فيه باكت من نفس الـ flow ده.
+#
+# flow_key = tuple bidirectional موحّد لاتجاهين الاتصال
+flows = {}            # flow_key -> {"stream_id": int, "last_seen": float}
+stream_id_counter = [0]
 
-# لحساب الـ rate features
-packet_times    = []
-icmp_times      = []
-syn_count       = [0]
-total_count     = [0]
-WINDOW          = 5.0   # ثواني للـ rate window
+FLOW_TIMEOUT = 120.0   # ثانية - لو الـ flow ساكت أكتر من كده، نعتبره خلص ونرجّع رقمه للاستخدام
 
-COMMON_TTLS     = {32, 64, 128, 255}
+# لحساب الـ rate features (دول لسه عالميين بطبيعتهم - مقصودين كده)
+packet_times = []
+icmp_times   = []
+syn_count    = [0]
+total_count  = [0]
+WINDOW       = 5.0   # ثواني للـ rate window
+
+COMMON_TTLS  = {32, 64, 128, 255}
+
+
+def get_flow_key(proto, ip_src, ip_dst, src_port, dst_port):
+    """
+    [FIX 1] مفتاح bidirectional: نرتب الطرفين عشان (A->B) و(B->A)
+    ياخدوا نفس الـ flow_key بالظبط - زي tcp.stream في Wireshark فعليًا.
+    """
+    endpoint_a = (ip_src, src_port)
+    endpoint_b = (ip_dst, dst_port)
+    ordered = tuple(sorted([endpoint_a, endpoint_b]))
+    return (proto, ordered[0], ordered[1])
+
+
+def get_flow_state(flow_key, now):
+    """
+    [FIX 1+2] يرجع (stream_id, deltatime) للـ flow ده.
+    - لو flow جديد: ياخد رقم جديد، وdeltatime = 0 (أول باكت في الاتصال).
+    - لو flow قديم بس "منتهي" (ساكت أكتر من FLOW_TIMEOUT): نعتبره اتصال
+      جديد فعليًا (زي ما بيحصل في الواقع لما TCP connection يتقفل ويتفتح تاني).
+    - غير كده: deltatime = الفرق من آخر باكت في نفس الـ flow بس (مش كل
+      الترافيك اللي بيمر على الكارت).
+    """
+    state = flows.get(flow_key)
+
+    if state is None or (now - state["last_seen"]) > FLOW_TIMEOUT:
+        stream_id_counter[0] += 1
+        flows[flow_key] = {"stream_id": stream_id_counter[0], "last_seen": now}
+        return flows[flow_key]["stream_id"], 0.0
+
+    deltatime = now - state["last_seen"]
+    state["last_seen"] = now
+    return state["stream_id"], deltatime
+
+
+def cleanup_old_flows(now):
+    """تنظيف دوري بسيط عشان الـ dict ميكبرش لانهائي على جلسة طويلة."""
+    if len(flows) < 5000:
+        return
+    dead = [k for k, v in flows.items() if (now - v["last_seen"]) > FLOW_TIMEOUT]
+    for k in dead:
+        del flows[k]
 
 
 def extract_features(pkt):
     now = time.time()
-    deltatime = now - last_time[0]
-    last_time[0] = now
 
-    # ── Rate tracking ─────────────────────────────────────────────
+    # ── Rate tracking (عالمي - ده مقصود، عشان نقيس الحمل الكلي على الكارت) ──
     packet_times.append(now)
     total_count[0] += 1
 
-    # نشيل الباكيتات القديمة من الـ window
     cutoff = now - WINDOW
     while packet_times and packet_times[0] < cutoff:
         packet_times.pop(0)
@@ -87,13 +145,16 @@ def extract_features(pkt):
     has_ip_source = has_ip_dest = 0
     ip_flag_df = ip_flag_mf = ip_flag_none = 0
     is_fragmented = 0
-    is_ipv6 = 0
     ttl = 0
-    is_common_ttl = ttl_anomaly = ttl_dev = 0
+    is_common_ttl = ttl_anomaly = 0
+    ttl_dev = 0.0
+    ip_src = ip_dst = None
 
     if IP in pkt:
         has_ip_source = 1
         has_ip_dest   = 1
+        ip_src        = pkt[IP].src
+        ip_dst        = pkt[IP].dst
         flags         = int(pkt[IP].flags)
         ip_flag_df    = 1 if flags & 0x02 else 0
         ip_flag_mf    = 1 if flags & 0x01 else 0
@@ -102,7 +163,6 @@ def extract_features(pkt):
         ttl           = pkt[IP].ttl
         is_common_ttl = 1 if ttl in COMMON_TTLS else 0
         ttl_anomaly   = 1 if ttl < 10 or ttl > 200 else 0
-        # كم بعيد عن أقرب common TTL
         diffs         = [abs(ttl - c) for c in COMMON_TTLS]
         ttl_dev       = float(min(diffs))
 
@@ -112,6 +172,8 @@ def extract_features(pkt):
     tcp_seq = tcp_ack_num = tcp_dst_port = tcp_src_port = tcp_stream = 0
     tcp_seq_exists = tcp_ack_exists = tcp_stream_exists = 0
     tcp_syn_flag = tcp_ack_flag = tcp_fin_flag = tcp_rst_flag = 0
+
+    flow_key = None
 
     if TCP in pkt:
         is_tcp_packet  = 1
@@ -136,11 +198,7 @@ def extract_features(pkt):
         tcp_ack_exists = 1 if tcp_ack else 0
 
         if IP in pkt:
-            key = (pkt[IP].src, pkt[IP].dst, tcp_src_port, tcp_dst_port)
-            if key not in tcp_stream_map:
-                stream_id[0] += 1
-                tcp_stream_map[key] = stream_id[0]
-            tcp_stream        = tcp_stream_map[key]
+            flow_key = get_flow_key("TCP", ip_src, ip_dst, tcp_src_port, tcp_dst_port)
             tcp_stream_exists = 1
 
         if tcp_syn:
@@ -152,6 +210,8 @@ def extract_features(pkt):
         is_udp        = 1
         udp_src_port  = int(pkt[UDP].sport)
         udp_dst_port  = int(pkt[UDP].dport)
+        if IP in pkt and flow_key is None:
+            flow_key = get_flow_key("UDP", ip_src, ip_dst, udp_src_port, udp_dst_port)
 
     # ── ICMP ──────────────────────────────────────────────────────
     is_icmp_packet = icmp_type_val = 0
@@ -164,11 +224,38 @@ def extract_features(pkt):
         is_icmp_unreachable = 1 if icmp_type_val == 3 else 0
         icmp_suspicious    = 1 if icmp_rate > 50 else 0
         icmp_times.append(now)
+        if IP in pkt and flow_key is None:
+            flow_key = get_flow_key("ICMP", ip_src, ip_dst, 0, 0)
+
+    # [FIX 1+2] لو في flow_key (TCP/UDP/ICMP فيها IP)، نجيب stream_id
+    # و deltatime اللي بتاعه هو بس (مش الترافيك كله). غير كده fallback
+    # لـ flow_key عام بناءً على الـ IPs بس.
+    if flow_key is None and IP in pkt:
+        flow_key = get_flow_key("IP", ip_src, ip_dst, 0, 0)
+
+    if flow_key is not None:
+        sid, deltatime = get_flow_state(flow_key, now)
+        if is_tcp_packet:
+            tcp_stream = sid
+            tcp_stream_exists = 1
+    else:
+        # باكت من غير IP - حالة نادرة (ARP مثلاً)، منستخدمش deltatime عالمي تاني
+        deltatime = 0.0
+
+    cleanup_old_flows(now)
 
     # ── DNS ───────────────────────────────────────────────────────
     has_dns_query = 1 if DNS in pkt else 0
 
     # ── HTTP ──────────────────────────────────────────────────────
+    # [ملاحظة مهمة] الفيتشرز دي (is_browser, is_attack_tool, is_script,
+    # is_http_*) بتعتمد على إن الـ payload يكون نص HTTP واضح (plaintext).
+    # مع HTTPS (اللي هو الغالبية العظمى من التراف��ك العادي النهاردة) الـ
+    # payload بيكون مشفّر، فالفيتشرز دي هتفضل صفر حتى لو الترافيك طبيعي
+    # 100%. ده قيد حقيقي في تصميم الموديل نفسه ومش حاجة ينصلح من كود
+    # الالتقاط - الحل الجذري إنك تضيف traffic عادي HTTPS لداتاسيت
+    # التدريب وتدّي الموديل فرصة يتعلم باترن "Normal" غير قائم على HTTP
+    # plaintext بس.
     is_http_response = is_http_request = is_http_1_0 = 0
     is_http_success  = is_http_error   = is_http_redirect = 0
     is_2xx = is_3xx = is_4xx = is_5xx  = 0
@@ -185,11 +272,9 @@ def extract_features(pkt):
             payload = pkt[Raw].load.decode('utf-8', errors='ignore')
             pl_low  = payload.lower()
 
-            # HTTP version
             if 'HTTP/1.0' in payload:
                 is_http_1_0 = 1
 
-            # HTTP response
             if payload.startswith('HTTP/'):
                 is_http_response = 1
                 parts = payload.split(' ')
@@ -204,14 +289,12 @@ def extract_features(pkt):
                     elif code.startswith('5'):
                         is_5xx = is_http_error = 1
 
-            # HTTP request
             if any(payload.startswith(m) for m in ['GET ', 'POST ', 'PUT ', 'DELETE ', 'HEAD ', 'OPTIONS ']):
                 is_http_request = 1
                 method = payload.split(' ')[0]
                 if method in ['PUT', 'DELETE', 'PATCH', 'OPTIONS', 'TRACE']:
                     is_suspicious_method = 1
 
-                # URI analysis
                 try:
                     uri = payload.split(' ')[1]
                     uri_length     = len(uri)
@@ -226,7 +309,6 @@ def extract_features(pkt):
                 except Exception:
                     pass
 
-            # Content-Type
             if 'Content-Type:' in payload:
                 ct = payload.split('Content-Type:')[1].split('\r\n')[0].lower()
                 is_html   = 1 if 'html' in ct else 0
@@ -235,7 +317,6 @@ def extract_features(pkt):
                 is_image  = 1 if 'image' in ct else 0
                 is_form   = 1 if 'form' in ct else 0
 
-            # Content-Length
             if 'Content-Length:' in payload:
                 try:
                     cl = payload.split('Content-Length:')[1].split('\r\n')[0].strip()
@@ -243,7 +324,6 @@ def extract_features(pkt):
                 except Exception:
                     pass
 
-            # payload analysis
             has_sql           = 1 if any(k in pl_low for k in ['select ', 'union ', 'drop ', 'insert ', 'delete from']) else 0
             has_xss           = 1 if any(k in pl_low for k in ['<script', 'javascript:', 'onerror=', 'onload=']) else 0
             is_attack_tool    = 1 if any(k in pl_low for k in ['sqlmap', 'nmap', 'nikto', 'hydra', 'metasploit', 'ffuf', 'masscan']) else 0
@@ -340,12 +420,20 @@ def process_packet(pkt):
         )
         result = response.json()
         confidence = result.get("confidence")
+        bin_conf   = result.get("binary_confidence")
         conf_str   = f"{confidence * 100:.1f}%" if confidence is not None else "N/A"
-
+        bin_str    = f"{bin_conf * 100:.1f}%" if bin_conf is not None else "N/A"
+        #result = response.json()
+        #confidence = result.get("confidence")
+        #conf_str   = f"{confidence * 100:.1f}%" if confidence is not None else "N/A"
         if result.get("is_attack"):
-            print(f"🔴 ATTACK | {result['attack_type']:20s} | {result['severity']:8s} | {conf_str} | {pkt[IP].src}")
+            print(f"🔴 ATTACK | {result['attack_type']:20s} | {result['severity']:8s} | multi={conf_str} | bin={bin_str} | {pkt[IP].src}")
         else:
-            print(f"🟢 Normal |                      |          | {conf_str} | {pkt[IP].src}")
+            print(f"🟢 Normal |                      |          | bin={bin_str} | {pkt[IP].src}")
+        #if result.get("is_attack"):
+        #    print(f"🔴 ATTACK | {result['attack_type']:20s} | {result['severity']:8s} | {conf_str} | {pkt[IP].src}")
+        #else:
+        #    print(f"🟢 Normal |                      |          | {conf_str} | {pkt[IP].src}")
 
     except Exception as e:
         print(f"Error: {e}")
@@ -353,7 +441,7 @@ def process_packet(pkt):
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("  CyberShield — Live Packet Capture")
+    print("  CyberShield — Live Packet Capture (FIXED)")
     print("  Sending to:", API_URL)
     print("  Press Ctrl+C to stop")
     print("=" * 60)
