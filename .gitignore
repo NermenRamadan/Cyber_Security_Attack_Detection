@@ -35,3 +35,4 @@ venv_old/
 node_modules/
 .next/
 __pycache__/
+.env
