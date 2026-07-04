@@ -33,6 +33,7 @@ BASE_PATH = os.path.abspath(BASE_PATH)
 # ── 💾 تفعيل وإعداد SQLite ──────────────────────────────────────────
 DB_FILE = os.path.join(os.path.dirname(__file__), "cyber_security.db")
 
+
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -66,23 +67,32 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 init_db()
 print("✅ SQLite database initialized successfully!")
 
 # ── 🤖 تحميل موديلات الذكاء الاصطناعي ──────────────────────────────────
 try:
-    model_binary        = joblib.load(os.path.join(BASE_PATH, "model_binary.pkl"))
+    model_binary = XGBClassifier()
+    model_binary.load_model(os.path.join(BASE_PATH, "model_binary_v6.json"))
     model_multi = XGBClassifier()
     model_multi.load_model(os.path.join(BASE_PATH, "model_multi.json"))
 
-    scaler              = joblib.load(os.path.join(BASE_PATH, "scaler.pkl"))
-    label_encoder_multi = joblib.load(os.path.join(BASE_PATH, "label_encoder_multi.pkl"))
-    feature_names_bin   = joblib.load(os.path.join(BASE_PATH, "feature_names_binary.pkl"))
-    scaler_features     = list(scaler.feature_names_in_)
-    ordinal_encoders    = joblib.load(os.path.join(BASE_PATH, "ordinal_encoders.pkl"))
-    top_protocols       = joblib.load(os.path.join(BASE_PATH, "top_protocols.pkl"))
-    print(f"Models loaded — binary: {len(feature_names_bin)} features | scaler: {len(scaler_features)} features")
+    scaler = joblib.load(os.path.join(BASE_PATH, "scaler.pkl"))
+    label_encoder_multi = joblib.load(
+        os.path.join(BASE_PATH, "label_encoder_multi.pkl"))
+    feature_names_bin = joblib.load(os.path.join(
+        BASE_PATH, "feature_names_binary_v6.pkl"))
+    scaler_features = list(scaler.feature_names_in_)
+    ordinal_encoders = joblib.load(
+        os.path.join(BASE_PATH, "ordinal_encoders.pkl"))
+    top_protocols = joblib.load(os.path.join(
+        BASE_PATH, "top_protocols_v6.pkl"))
+    print(
+        f"Models loaded — binary: {len(feature_names_bin)} features | scaler: {len(scaler_features)} features")
 except Exception as e:
+    import traceback
+    traceback.print_exc()
     print(f"Error loading models: {e}")
     exit(1)
 
@@ -117,12 +127,14 @@ solutions_map = {
 normal_counter = [0]
 COMMON_TTLS = {32, 64, 128, 255}
 
+
 def encode_protocol(protocol: str) -> float:
     try:
         proto = protocol if protocol in top_protocols else "Other"
         return float(ordinal_encoders['Protocol'].transform([[proto]])[0][0])
     except Exception:
         return -1.0
+
 
 def parse_flag(val: Any) -> float:
     if isinstance(val, str):
@@ -132,6 +144,7 @@ def parse_flag(val: Any) -> float:
     except Exception:
         return 0.0
 
+
 def safe_float(val: Any, default: float = 0.0) -> float:
     try:
         if val is None or str(val).strip() in ("", "nan", "None"):
@@ -139,6 +152,7 @@ def safe_float(val: Any, default: float = 0.0) -> float:
         return float(str(val).replace(",", "."))
     except Exception:
         return default
+
 
 class NetworkFlow(BaseModel):
     binary_features: list[float]
@@ -148,6 +162,7 @@ class NetworkFlow(BaseModel):
     user_id: str = ""
     device_id: str = ""
 
+
 class NetworkFlowLegacy(BaseModel):
     features: list[float]
     source_ip: str = "0.0.0.0"
@@ -155,19 +170,21 @@ class NetworkFlowLegacy(BaseModel):
     user_id: str = ""
     device_id: str = ""
 
+
 def run_prediction(binary_features: list, multi_features_dict: dict,
                    source_ip: str, protocol: str, user_id: str, device_id: str):
 
-    X_bin     = pd.DataFrame([binary_features], columns=feature_names_bin)
-    is_attack = int(model_binary.predict(X_bin)[0])
+    X_bin = pd.DataFrame([binary_features], columns=feature_names_bin)
+    proba = model_binary.predict_proba(X_bin)[0][1]
+    is_attack = 1 if proba >= 0.35 else 0
 
     try:
-        binary_proba      = model_binary.predict_proba(X_bin)[0]
+        binary_proba = model_binary.predict_proba(X_bin)[0]
         binary_confidence = float(np.max(binary_proba))
     except Exception:
         binary_confidence = None
 
-    #if is_attack == 0:
+    # if is_attack == 0:
     #    result = {
     #        "is_attack":   False,
     #        "attack_type": "Normal",
@@ -177,15 +194,15 @@ def run_prediction(binary_features: list, multi_features_dict: dict,
     #        "solution":    "",
     #    }
     if is_attack == 0:
-        result = {
-            "is_attack":         False,
-            "attack_type":       "Normal",
-            "severity":          "None",
-            "confidence":        binary_confidence,
-            "binary_confidence": binary_confidence,   # ← جديد
-            "code":              -1,
-            "solution":          "",
-        }
+            result = {
+                "is_attack": False,
+                "attack_type": "Normal",
+                "severity": "None",
+                "confidence": binary_confidence,
+                "binary_confidence": binary_confidence,
+                "code": -1,
+                "solution": "",
+            }
     else:
         multi_row = {}
         for feat in scaler_features:
@@ -199,16 +216,16 @@ def run_prediction(binary_features: list, multi_features_dict: dict,
             else:
                 multi_row[feat] = 0.0
 
-        X_multi  = pd.DataFrame([multi_row], columns=scaler_features)
+        X_multi = pd.DataFrame([multi_row], columns=scaler_features)
         X_scaled = scaler.transform(X_multi)
 
-        pred_num    = model_multi.predict(X_scaled)[0]
+        pred_num = model_multi.predict(X_scaled)[0]
         attack_type = label_encoder_multi.inverse_transform([pred_num])[0]
-        severity    = severity_map.get(attack_type, "Medium")
-        solution    = solutions_map.get(attack_type, "")
+        severity = severity_map.get(attack_type, "Medium")
+        solution = solutions_map.get(attack_type, "")
 
         try:
-            proba      = model_multi.predict_proba(X_scaled)[0]
+            proba = model_multi.predict_proba(X_scaled)[0]
             confidence = float(np.max(proba))
         except Exception:
             confidence = None
@@ -230,7 +247,7 @@ def run_prediction(binary_features: list, multi_features_dict: dict,
             "binary_confidence": binary_confidence,   # ← جديد
             "code":              int(pred_num),
             "solution":          solution,
-        } 
+        }
 
     # ── 💾 الحفظ في SQLite بدلاً من Supabase ──────────────────────────
     try:
@@ -241,7 +258,8 @@ def run_prediction(binary_features: list, multi_features_dict: dict,
                 should_save = True
 
         if should_save:
-            final_user_id = user_id if (user_id and user_id.strip()) else "local_user"
+            final_user_id = user_id if (
+                user_id and user_id.strip()) else "local_user"
             conn = sqlite3.connect(DB_FILE)
             cursor = conn.cursor()
             cursor.execute('''
@@ -268,15 +286,17 @@ def run_prediction(binary_features: list, multi_features_dict: dict,
     return result
 
 # ── 🤖 الـ Endpoints الخاصة بـ SentinelAI Agent ──────────────────────────
+
+
 @app.post("/api/agent")
 async def sentinel_agent(payload: dict = Body(...)):
     try:
         messages = payload.get("messages", [])
         mode = payload.get("mode", "chat")
         logs = payload.get("logs", [])
-        
+
         KEY = os.environ.get("LOVABLE_API_KEY")
-        
+
         # ── 🎭 لو مفيش Key، هنرجع ردود جاهزة عشان المشروع يشتغل وميقفش ──
         if not KEY:
             if mode == "summary":
@@ -301,8 +321,10 @@ async def sentinel_agent(payload: dict = Body(...)):
         if logs:
             ctx_lines = []
             for l in logs[:25]:
-                ctx_lines.append(f"- [{l.get('severity')}] {l.get('attack_type')} via {l.get('protocol')} from {l.get('source_ip')} (conf {l.get('confidence')}%)")
-            ctx = f"Recent detections (most recent first):\n" + "\n".join(ctx_lines)
+                ctx_lines.append(
+                    f"- [{l.get('severity')}] {l.get('attack_type')} via {l.get('protocol')} from {l.get('source_ip')} (conf {l.get('confidence')}%)")
+            ctx = f"Recent detections (most recent first):\n" + \
+                "\n".join(ctx_lines)
 
         system_chat = f"You are SentinelAI, a senior SOC analyst. Be concise, technical, and actionable.\nYou have access to recent detection telemetry below. Reference specific events when relevant.\n{ctx}"
         system_summary = f"You are SentinelAI. Generate a crisp incident report from the telemetry below.\nOutput sections: ## Executive Summary, ## Top Threats, ## Recommended Actions (numbered, prioritized), ## Response Playbook.\nTelemetry:\n{ctx}"
@@ -324,7 +346,8 @@ async def sentinel_agent(payload: dict = Body(...)):
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "https://ai.gateway.lovable.dev/v1/chat/completions",
-                headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"},
+                headers={"Authorization": f"Bearer {KEY}",
+                         "Content-Type": "application/json"},
                 json=body,
                 timeout=60.0
             )
@@ -336,13 +359,16 @@ async def sentinel_agent(payload: dict = Body(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 # Endpoint لعرض الـ logs في الـ Frontend
+
+
 @app.get("/api/logs")
 def get_logs(limit: int = 50):
     try:
         conn = sqlite3.connect(DB_FILE)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM detection_logs ORDER BY detected_at DESC LIMIT ?", (limit,))
+        cursor.execute(
+            "SELECT * FROM detection_logs ORDER BY detected_at DESC LIMIT ?", (limit,))
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
@@ -350,10 +376,13 @@ def get_logs(limit: int = 50):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ── 🛠️ بقية الـ Endpoints القديمة كما هي تماماً ──────────────────────────
+
+
 @app.post("/predict")
 def predict_legacy(flow: NetworkFlowLegacy):
     try:
-        multi_dict = {feat: flow.features[i] for i, feat in enumerate(feature_names_bin)}
+        multi_dict = {feat: flow.features[i]
+                      for i, feat in enumerate(feature_names_bin)}
         return run_prediction(
             binary_features=flow.features,
             multi_features_dict=multi_dict,
@@ -365,6 +394,7 @@ def predict_legacy(flow: NetworkFlowLegacy):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/predict/full")
 def predict_full(flow: NetworkFlow):
@@ -381,11 +411,12 @@ def predict_full(flow: NetworkFlow):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/predict/wireshark-row")
 def predict_wireshark_row(row: dict):
     try:
         binary_f, multi_f, protocol = wireshark_row_to_features(row)
-        src_ip  = str(row.get("IP Source", row.get("Source", "0.0.0.0")))
+        src_ip = str(row.get("IP Source", row.get("Source", "0.0.0.0")))
         user_id = str(row.get("user_id", ""))
         return run_prediction(
             binary_features=binary_f,
@@ -399,16 +430,19 @@ def predict_wireshark_row(row: dict):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/predict/csv-row")
 def predict_csv_row(row: dict):
     try:
-        binary_features = [float(row.get(f, 0) or 0) for f in feature_names_bin]
-        multi_dict      = {f: float(row.get(f, 0) or 0) for f in scaler_features}
-        protocol        = str(row.get("Protocol", "TCP"))
+        binary_features = [float(row.get(f, 0) or 0)
+                           for f in feature_names_bin]
+        multi_dict = {f: float(row.get(f, 0) or 0) for f in scaler_features}
+        protocol = str(row.get("Protocol", "TCP"))
         return run_prediction(
             binary_features=binary_features,
             multi_features_dict=multi_dict,
-            source_ip=str(row.get("IP Source", row.get("source_ip", "0.0.0.0"))),
+            source_ip=str(
+                row.get("IP Source", row.get("source_ip", "0.0.0.0"))),
             protocol=protocol,
             user_id=str(row.get("user_id", "")),
             device_id=str(row.get("device_id", "")),
@@ -416,6 +450,7 @@ def predict_csv_row(row: dict):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/health")
 def health_check():
@@ -426,6 +461,7 @@ def health_check():
         "top_protocols":   top_protocols,
     }
 
+
 @app.get("/features")
 def get_features():
     return {
@@ -433,6 +469,7 @@ def get_features():
         "multi_features":  scaler_features,
         "top_protocols":   top_protocols,
     }
+
 
 @app.get("/")
 def root():
@@ -442,6 +479,7 @@ def root():
                       "/predict/wireshark-row", "/predict/csv-row",
                       "/api/agent", "/api/logs", "/features", "/docs"],
     }
+
 
 def wireshark_row_to_features(row: dict) -> tuple:
     protocol = str(row.get("Protocol", "TCP")).strip()
@@ -465,101 +503,117 @@ def wireshark_row_to_features(row: dict) -> tuple:
         tcp_psh = tcp_urg = 0.0
 
     ip_flags_str = str(row.get("IP Flags", "0x00")).lower()
-    ip_flag_df   = 1.0 if "0x40" in ip_flags_str else 0.0
-    ip_flag_mf   = 1.0 if "0x20" in ip_flags_str else 0.0
+    ip_flag_df = 1.0 if "0x40" in ip_flags_str else 0.0
+    ip_flag_mf = 1.0 if "0x20" in ip_flags_str else 0.0
     ip_flag_none = 1.0 if ip_flags_str in ["0x00", "0", "0x00,0x00"] else 0.0
 
     proto_up = protocol.upper()
-    is_tcp   = 1.0 if "TCP"  in proto_up else 0.0
-    is_udp   = 1.0 if "UDP"  in proto_up else 0.0
-    is_icmp  = 1.0 if "ICMP" in proto_up else 0.0
+    is_tcp = 1.0 if "TCP" in proto_up else 0.0
+    is_udp = 1.0 if "UDP" in proto_up else 0.0
+    is_icmp = 1.0 if "ICMP" in proto_up else 0.0
 
-    ttl           = safe_float(str(row.get("IP TTL", 64)).split(",")[0])
+    ttl = safe_float(str(row.get("IP TTL", 64)).split(",")[0])
     is_common_ttl = 1.0 if ttl in COMMON_TTLS else 0.0
-    ttl_anomaly   = 1.0 if ttl < 10 or ttl > 200 else 0.0
-    ttl_dev       = float(min(abs(ttl - c) for c in COMMON_TTLS))
+    ttl_anomaly = 1.0 if ttl < 10 or ttl > 200 else 0.0
+    ttl_dev = float(min(abs(ttl - c) for c in COMMON_TTLS))
 
     tcp_src_port = safe_float(row.get("TCP Source Port", -1))
     tcp_dst_port = safe_float(row.get("TCP Destination Port", -1))
     udp_src_port = safe_float(row.get("UDP Source Port", 0))
     udp_dst_port = safe_float(row.get("UDP Destination Port", 0))
 
-    length     = safe_float(row.get("Length", 0))
-    small_pkt  = 1.0 if length < 64   else 0.0
+    length = safe_float(row.get("Length", 0))
+    small_pkt = 1.0 if length < 64 else 0.0
     medium_pkt = 1.0 if 64 <= length <= 1500 else 0.0
-    large_pkt  = 1.0 if length > 1500 else 0.0
+    large_pkt = 1.0 if length > 1500 else 0.0
 
-    http_method    = str(row.get("HTTP Request Method", "") or "").strip()
-    http_uri       = str(row.get("HTTP Request URI",    "") or "").strip()
-    http_version   = str(row.get("HTTP Request Version","") or "").strip()
+    http_method = str(row.get("HTTP Request Method", "") or "").strip()
+    http_uri = str(row.get("HTTP Request URI",    "") or "").strip()
+    http_version = str(row.get("HTTP Request Version", "") or "").strip()
     http_resp_code = str(row.get("HTTP Response Code",  "") or "").strip()
-    http_ua        = str(row.get("HTTP User-Agent",     "") or "").lower()
-    http_ct        = str(row.get("HTTP Content Type",   "") or "").lower()
-    http_cl        = safe_float(row.get("HTTP Content-Length", 0))
+    http_ua = str(row.get("HTTP User-Agent",     "") or "").lower()
+    http_ct = str(row.get("HTTP Content Type",   "") or "").lower()
+    http_cl = safe_float(row.get("HTTP Content-Length", 0))
 
-    is_http_request  = 1.0 if http_method    else 0.0
+    is_http_request = 1.0 if http_method else 0.0
     is_http_response = 1.0 if http_resp_code else 0.0
-    is_http_1_0      = 1.0 if "1.0" in http_version else 0.0
+    is_http_1_0 = 1.0 if "1.0" in http_version else 0.0
 
     is_2xx = is_3xx = is_4xx = is_5xx = 0.0
     is_http_success = is_http_error = 0.0
     if http_resp_code:
-        if   http_resp_code.startswith("2"): is_2xx = is_http_success = 1.0
-        elif http_resp_code.startswith("3"): is_3xx = 1.0
-        elif http_resp_code.startswith("4"): is_4xx = is_http_error   = 1.0
-        elif http_resp_code.startswith("5"): is_5xx = is_http_error   = 1.0
+        if http_resp_code.startswith("2"):
+            is_2xx = is_http_success = 1.0
+        elif http_resp_code.startswith("3"):
+            is_3xx = 1.0
+        elif http_resp_code.startswith("4"):
+            is_4xx = is_http_error = 1.0
+        elif http_resp_code.startswith("5"):
+            is_5xx = is_http_error = 1.0
 
-    is_suspicious_method = 1.0 if http_method in ["POST", "OPTIONS", "PROPFIND"] else 0.0
+    is_suspicious_method = 1.0 if http_method in [
+        "POST", "OPTIONS", "PROPFIND"] else 0.0
 
-    uri_low        = http_uri.lower()
-    full_uri       = str(row.get("HTTP Full URI", "") or "").lower()
-    uri_length     = float(len(http_uri))
+    uri_low = http_uri.lower()
+    full_uri = str(row.get("HTTP Full URI", "") or "").lower()
+    uri_length = float(len(http_uri))
     uri_path_depth = float(http_uri.count("/"))
     uri_has_params = 1.0 if "?" in http_uri else 0.0
-    uri_has_special = 1.0 if any(c in http_uri for c in ["<",">",'"',"'",";","(",")","{"]) else 0.0
+    uri_has_special = 1.0 if any(c in http_uri for c in [
+                                 "<", ">", '"', "'", ";", "(", ")", "{"]) else 0.0
 
-    is_sqli_path          = 1.0 if any(k in uri_low for k in ["'","union","select","drop","insert","or 1=1"]) else 0.0
-    is_system_file_attack = 1.0 if any(k in uri_low for k in ["etc/passwd","win.ini","../","..\\"]) else 0.0
-    has_path_traversal    = 1.0 if "../" in http_uri or "..\\" in http_uri else 0.0
-    has_admin             = 1.0 if "admin" in uri_low else 0.0
+    is_sqli_path = 1.0 if any(k in uri_low for k in [
+                              "'", "union", "select", "drop", "insert", "or 1=1"]) else 0.0
+    is_system_file_attack = 1.0 if any(
+        k in uri_low for k in ["etc/passwd", "win.ini", "../", "..\\"]) else 0.0
+    has_path_traversal = 1.0 if "../" in http_uri or "..\\" in http_uri else 0.0
+    has_admin = 1.0 if "admin" in uri_low else 0.0
 
     combined_uri = full_uri + uri_low
-    has_sql = 1.0 if any(k in combined_uri for k in ["select ","union ","drop ","insert ","delete from","' or"]) else 0.0
-    has_xss = 1.0 if any(k in combined_uri for k in ["<script","javascript:","onerror=","onload=","alert("]) else 0.0
+    has_sql = 1.0 if any(k in combined_uri for k in [
+                         "select ", "union ", "drop ", "insert ", "delete from", "' or"]) else 0.0
+    has_xss = 1.0 if any(k in combined_uri for k in [
+                         "<script", "javascript:", "onerror=", "onload=", "alert("]) else 0.0
 
-    is_attack_tool = 1.0 if any(k in http_ua for k in ["sqlmap","ffuf","fuzz","apachebench","nmap","nikto","masscan","hydra","metasploit"]) else 0.0
-    is_browser     = 1.0 if any(k in http_ua for k in ["mozilla","chrome","firefox","safari","edge"]) else 0.0
-    is_script      = 1.0 if any(k in http_ua for k in ["python","curl","wget","requests","go-http"]) else 0.0
-    is_bot         = 1.0 if any(k in http_ua for k in ["bot","crawler","spider","scraper"]) else 0.0
+    is_attack_tool = 1.0 if any(k in http_ua for k in [
+                                "sqlmap", "ffuf", "fuzz", "apachebench", "nmap", "nikto", "masscan", "hydra", "metasploit"]) else 0.0
+    is_browser = 1.0 if any(k in http_ua for k in [
+                            "mozilla", "chrome", "firefox", "safari", "edge"]) else 0.0
+    is_script = 1.0 if any(k in http_ua for k in [
+                           "python", "curl", "wget", "requests", "go-http"]) else 0.0
+    is_bot = 1.0 if any(k in http_ua for k in [
+                        "bot", "crawler", "spider", "scraper"]) else 0.0
 
-    is_html   = 1.0 if "html"         in http_ct else 0.0
-    is_text   = 1.0 if "text"         in http_ct else 0.0
+    is_html = 1.0 if "html" in http_ct else 0.0
+    is_text = 1.0 if "text" in http_ct else 0.0
     is_binary = 1.0 if "octet-stream" in http_ct else 0.0
-    is_image  = 1.0 if "image"        in http_ct else 0.0
-    is_form   = 1.0 if "form"         in http_ct else 0.0
+    is_image = 1.0 if "image" in http_ct else 0.0
+    is_form = 1.0 if "form" in http_ct else 0.0
 
-    has_dns_query = 1.0 if str(row.get("DNS Query Name", "") or "").strip() else 0.0
+    has_dns_query = 1.0 if str(
+        row.get("DNS Query Name", "") or "").strip() else 0.0
 
-    icmp_type           = safe_float(row.get("ICMP Type", -1))
-    is_icmp_echo        = 1.0 if icmp_type == 8 else 0.0
-    is_icmp_reply       = 1.0 if icmp_type == 0 else 0.0
+    icmp_type = safe_float(row.get("ICMP Type", -1))
+    is_icmp_echo = 1.0 if icmp_type == 8 else 0.0
+    is_icmp_reply = 1.0 if icmp_type == 0 else 0.0
     is_icmp_unreachable = 1.0 if icmp_type == 3 else 0.0
 
-    deltatime         = safe_float(row.get("deltatime", 0))
+    deltatime = safe_float(row.get("deltatime", 0))
     is_zero_deltatime = 1.0 if deltatime < 0.0001 else 0.0
-    pps               = min(1.0 / max(deltatime, 0.0001), 10000.0)
-    packet_rate       = pps
-    icmp_rate         = pps if is_icmp else 0.0
-    icmp_suspicious   = 1.0 if (is_icmp and icmp_rate > 50) else 0.0
-    is_fast_traffic   = 1.0 if pps > 100 else 0.0
+    pps = min(1.0 / max(deltatime, 0.0001), 10000.0)
+    packet_rate = pps
+    icmp_rate = pps if is_icmp else 0.0
+    icmp_suspicious = 1.0 if (is_icmp and icmp_rate > 50) else 0.0
+    is_fast_traffic = 1.0 if pps > 100 else 0.0
 
-    tcp_stream  = safe_float(row.get("TCP Stream", 0))
-    tcp_seq     = safe_float(row.get("TCP Sequence Number", 0))
+    tcp_stream = safe_float(row.get("TCP Stream", 0))
+    tcp_seq = safe_float(row.get("TCP Sequence Number", 0))
     tcp_ack_num = safe_float(row.get("TCP Acknowledgment Number", 0))
-    tcp_window  = safe_float(row.get("TCP Window Size", 0))
+    tcp_window = safe_float(row.get("TCP Window Size", 0))
 
-    is_fragmented = 1.0 if safe_float(row.get("IP Fragment Offset", 0)) > 0 else 0.0
-    syn_ratio     = tcp_syn
+    is_fragmented = 1.0 if safe_float(
+        row.get("IP Fragment Offset", 0)) > 0 else 0.0
+    syn_ratio = tcp_syn
 
     ip_length = safe_float(row.get("IP Length", 0))
 
@@ -648,7 +702,7 @@ def wireshark_row_to_features(row: dict) -> tuple:
     }
 
     binary_f = [all_f.get(f, 0.0) for f in feature_names_bin]
-    multi_f  = {f: float(all_f.get(f, 0.0)) for f in scaler_features}
+    multi_f = {f: float(all_f.get(f, 0.0)) for f in scaler_features}
 
     return binary_f, multi_f, protocol
 
