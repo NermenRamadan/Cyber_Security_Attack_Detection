@@ -2,7 +2,7 @@ import { ComposableMap, Geographies, Geography, Marker } from "react-simple-maps
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 // تأكدي من تحميل ملف الـ JSON ووضعه في فولدر public/world-110m.json ليعمل محلياً
-const geoUrl = "/world-110m.json";
+const geoUrl = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
 
 const CYBER_COORDINATES: Record<string, [number, number]> = {
   "US": [-100, 40],
