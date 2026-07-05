@@ -2,7 +2,9 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Shield } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+
+// عنوان الـ Backend (API.py) — عدّليه لو شغال على بورت أو دومين مختلف
+const API_URL = "http://localhost:8000";
 
 export const Route = createFileRoute("/login")({
   component: LoginPage,
@@ -15,11 +17,35 @@ function LoginPage() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
-const submit = async (e: React.FormEvent) => {
-  e.preventDefault();
-  toast.success("Signed in successfully");
-  navigate({ to: "/dashboard" });
-};
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        toast.error(data.detail || "Invalid email or password");
+        setLoading(false);
+        return;
+      }
+
+      // بنحفظ الـ user_id عشان كل الـ requests بعد كدا تبقى مرتبطة بيه
+      localStorage.setItem("user_id", data.user_id);
+      localStorage.setItem("user_email", data.email);
+
+      toast.success("Signed in successfully");
+      navigate({ to: "/dashboard" });
+    } catch (err) {
+      toast.error("Could not reach the server. Is the API running?");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <main className="flex min-h-[calc(100vh-4rem)] items-center justify-center px-6 py-12">

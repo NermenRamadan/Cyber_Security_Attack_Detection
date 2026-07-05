@@ -2,7 +2,9 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Shield } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+
+// عنوان الـ Backend (API.py) — عدّليه لو شغال على بورت أو دومين مختلف
+const API_URL = "http://localhost:8000";
 
 export const Route = createFileRoute("/register")({
   component: RegisterPage,
@@ -18,14 +20,31 @@ function RegisterPage() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    const { error } = await supabase.auth.signUp({ email, password });
-    setLoading(false);
-    if (error) {
-      toast.error(error.message);
-      return;
+    try {
+      const res = await fetch(`${API_URL}/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        toast.error(data.detail || "Could not create account");
+        setLoading(false);
+        return;
+      }
+
+      // بنحفظ الـ user_id عشان كل الـ requests بعد كدا تبقى مرتبطة بيه
+      localStorage.setItem("user_id", data.user_id);
+      localStorage.setItem("user_email", data.email);
+
+      toast.success("Account created!");
+      navigate({ to: "/dashboard" });
+    } catch (err) {
+      toast.error("Could not reach the server. Is the API running?");
+    } finally {
+      setLoading(false);
     }
-    toast.success("Account created! Check your email to confirm.");
-    navigate({ to: "/dashboard" });
   };
 
   return (

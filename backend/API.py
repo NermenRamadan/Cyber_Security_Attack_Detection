@@ -10,6 +10,8 @@ import sqlite3
 import httpx
 import pandas as pd
 import uuid
+import hashlib
+import secrets
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from typing import Any, List, Optional
@@ -22,22 +24,26 @@ app = FastAPI(title="CyberShield AI API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+    ],
+    allow_methods=["GET", "POST","DELETE"],
+    allow_headers=["Content-Type", "Authorization"],
+    allow_credentials=True,
 )
 
 BASE_PATH = os.path.join(os.path.dirname(__file__), "..", "notebook", "models")
 BASE_PATH = os.path.abspath(BASE_PATH)
 
-# ── 💾 تفعيل وإعداد SQLite ──────────────────────────────────────────
+# ── SQLite ──────────────────────────────────────────
 DB_FILE = os.path.join(os.path.dirname(__file__), "cyber_security.db")
 
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    # جدول الـ Detection Logs
+    # Detection Logs Table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS detection_logs (
             id TEXT PRIMARY KEY,
@@ -54,7 +60,7 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    # جدول الـ Chat Messages
+    # Chat Messages Table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS chat_messages (
             id TEXT PRIMARY KEY,
@@ -64,12 +70,65 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    #  Users Table (For Auth)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            salt TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    # جدول الـ Active Sessions — بيربط كل device_id باليوزر اللي حالياً بيراقبه لايف
+    # (ده اللي بيخلي سكريبت الـ Scapy، اللي مش عنده مفهوم "تسجيل دخول"، يعرف يبعت
+    # الديتكشنز على حساب اليوزر الصح لما مبيبعتش user_id مباشرة)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS active_sessions (
+            device_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     conn.commit()
     conn.close()
 
 
 init_db()
 print("✅ SQLite database initialized successfully!")
+
+# ── 🔐 Auth helpers (hashing بدون أي مكتبات خارجية) ──────────────────────
+PBKDF2_ITERATIONS = 260_000
+
+
+def hash_password(password: str, salt: str = None) -> tuple[str, str]:
+    """يرجع (password_hash, salt) كـ hex strings"""
+    if salt is None:
+        salt = secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), bytes.fromhex(salt), PBKDF2_ITERATIONS
+    )
+    return dk.hex(), salt
+
+
+def verify_password(password: str, password_hash: str, salt: str) -> bool:
+    dk, _ = hash_password(password, salt)
+    return secrets.compare_digest(dk, password_hash)
+
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class MonitorSession(BaseModel):
+    user_id: str
+    device_id: str = "default-device"
 
 # ── 🤖 تحميل موديلات الذكاء الاصطناعي ──────────────────────────────────
 try:
@@ -152,6 +211,28 @@ def safe_float(val: Any, default: float = 0.0) -> float:
         return float(str(val).replace(",", "."))
     except Exception:
         return default
+
+
+def resolve_user_id(user_id: str, device_id: str) -> str:
+    """
+    لو الطلب مبعتش user_id مباشر (زي سكريبت الـ Scapy)، بندور على مين هو
+    اليوزر اللي حالياً مسجل إنه بيراقب الـ device_id ده (من جدول active_sessions).
+    """
+    if user_id and user_id.strip():
+        return user_id.strip()
+    if device_id and device_id.strip():
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT user_id FROM active_sessions WHERE device_id = ?", (device_id,))
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                return row[0]
+        except Exception:
+            pass
+    return "local_user"
 
 
 class NetworkFlow(BaseModel):
@@ -258,8 +339,7 @@ def run_prediction(binary_features: list, multi_features_dict: dict,
                 should_save = True
 
         if should_save:
-            final_user_id = user_id if (
-                user_id and user_id.strip()) else "local_user"
+            final_user_id = resolve_user_id(user_id, device_id)
             conn = sqlite3.connect(DB_FILE)
             cursor = conn.cursor()
             cursor.execute('''
@@ -285,6 +365,106 @@ def run_prediction(binary_features: list, multi_features_dict: dict,
 
     return result
 
+# ── Authentication EndPoints──────────────────────────
+
+
+@app.post("/auth/register")
+def register(payload: RegisterRequest):
+    email = payload.email.strip().lower()
+    password = payload.password
+
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Invalid email")
+    if len(password) < 6:
+        raise HTTPException(
+            status_code=400, detail="Password must be at least 6 characters")
+
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM users WHERE email = ?", (email,))
+        if cursor.fetchone():
+            conn.close()
+            raise HTTPException(
+                status_code=409, detail="Email already registered")
+
+        user_id = str(uuid.uuid4())
+        password_hash, salt = hash_password(password)
+        cursor.execute(
+            "INSERT INTO users (id, email, password_hash, salt) VALUES (?, ?, ?, ?)",
+            (user_id, email, password_hash, salt),
+        )
+        conn.commit()
+        conn.close()
+        return {"user_id": user_id, "email": email}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/auth/login")
+def login(payload: LoginRequest):
+    email = payload.email.strip().lower()
+    password = payload.password
+
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users WHERE email = ?", (email,))
+        user = cursor.fetchone()
+        conn.close()
+
+        if not user or not verify_password(password, user["password_hash"], user["salt"]):
+            raise HTTPException(
+                status_code=401, detail="Invalid email or password")
+
+        return {"user_id": user["id"], "email": user["email"]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── 🖥️ ربط الجهاز (device_id) باليوزر اللي بيراقبه لايف دلوقتي ───────────
+
+
+@app.post("/monitor/register")
+def register_monitor_session(payload: MonitorSession):
+    if not payload.user_id.strip():
+        raise HTTPException(status_code=400, detail="user_id is required")
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO active_sessions (device_id, user_id, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(device_id) DO UPDATE SET
+                user_id = excluded.user_id,
+                updated_at = excluded.updated_at
+        ''', (payload.device_id, payload.user_id, datetime.now(timezone.utc).isoformat()))
+        conn.commit()
+        conn.close()
+        return {"status": "registered", "device_id": payload.device_id, "user_id": payload.user_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/monitor/register")
+def unregister_monitor_session(device_id: str = "default-device"):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM active_sessions WHERE device_id = ?", (device_id,))
+        conn.commit()
+        conn.close()
+        return {"status": "unregistered", "device_id": device_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── 🤖 الـ Endpoints الخاصة بـ SentinelAI Agent ──────────────────────────
 
 
@@ -297,7 +477,7 @@ async def sentinel_agent(payload: dict = Body(...)):
 
         KEY = os.environ.get("LOVABLE_API_KEY")
 
-        # ── 🎭 لو مفيش Key، هنرجع ردود جاهزة عشان المشروع يشتغل وميقفش ──
+        # ──return mock responses to prevent the application from failing (If the API key is not available)──
         if not KEY:
             if mode == "summary":
                 return {
@@ -362,16 +542,40 @@ async def sentinel_agent(payload: dict = Body(...)):
 
 
 @app.get("/api/logs")
-def get_logs(limit: int = 50):
+def get_logs(limit: int = 50, user_id: Optional[str] = None):
     try:
         conn = sqlite3.connect(DB_FILE)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM detection_logs ORDER BY detected_at DESC LIMIT ?", (limit,))
+        if user_id and user_id.strip():
+            cursor.execute(
+                "SELECT * FROM detection_logs WHERE user_id = ? ORDER BY detected_at DESC LIMIT ?",
+                (user_id, limit),
+            )
+        else:
+            cursor.execute(
+                "SELECT * FROM detection_logs ORDER BY detected_at DESC LIMIT ?", (limit,))
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/logs")
+def clear_logs(user_id: str):
+    # لازم user_id هنا — عشان محدش يمسح بيانات كل اليوزرز بالغلط
+    if not user_id or not user_id.strip():
+        raise HTTPException(status_code=400, detail="user_id is required")
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM detection_logs WHERE user_id = ?", (user_id,))
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return {"deleted": deleted}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -477,7 +681,8 @@ def root():
         "message":   "CyberShield AI API (SQLite Local Version)",
         "endpoints": ["/health", "/predict", "/predict/full",
                       "/predict/wireshark-row", "/predict/csv-row",
-                      "/api/agent", "/api/logs", "/features", "/docs"],
+                      "/api/agent", "/api/logs", "/features",
+                      "/auth/register", "/auth/login", "/docs"],
     }
 
 
