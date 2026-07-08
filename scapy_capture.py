@@ -35,34 +35,19 @@ API_URL = "http://127.0.0.1:8000/predict/full"
 # نفس المفتاح المحدد في API.py (DEVICE_API_KEY) — لازم يكون مطابق تمامًا
 DEVICE_API_KEY = "depi-project-secret-key-2026"
 
-# ── Feature lists (مطابقة للموديل) ──────────────────────────────
-BINARY_FEATURES = [
-    'deltatime', 'ip_flag_df', 'TCP Window Size', 'is_browser',
-    'ip_flag_none', 'tcp_rst', 'is_attack_tool',
-    'TCP Acknowledgment Number', 'is_http_1_0', 'has_dns_query',
-    'TCP Sequence Number', 'TCP Destination Port', 'Length',
-    'is_http_error', 'tcp_psh', 'TCP Stream', 'is_script',
-    'is_http_response', 'TCP Source Port', 'HTTP Content-Length'
-]
+# ── Feature lists (بتتجاب ديناميكيًا من السيرفر، مش مكتوبة يدوي) ──
+# ده بيمنع أي mismatch مستقبلي لو الموديل اتغيّر (v3, v4...) وأنسى
+# أحدّث القايمة هنا يدويًا — السيرفر هو المصدر الوحيد للحقيقة.
+def fetch_feature_lists():
+    base_url = API_URL.rsplit("/predict", 1)[0]
+    resp = requests.get(f"{base_url}/features", timeout=5)
+    resp.raise_for_status()
+    data = resp.json()
+    return data["binary_features"], data["multi_features"]
 
-MULTI_FEATURES = [
-    'TCP SYN Flag', 'TCP ACK Flag', 'TCP FIN Flag', 'TCP RST Flag',
-    'TCP Window Size', 'TCP Stream', 'UDP Source Port', 'UDP Destination Port',
-    'ICMP Type', 'deltatime', 'is_http_response', 'is_2xx', 'is_3xx', 'is_4xx',
-    'is_5xx', 'is_http_success', 'is_http_request', 'is_suspicious_method',
-    'is_attack_tool', 'is_browser', 'is_script', 'is_bot', 'uri_has_params',
-    'is_sqli_path', 'is_system_file_attack', 'uri_path_depth', 'uri_length',
-    'uri_has_special', 'has_sql', 'has_xss', 'has_path_traversal', 'has_admin',
-    'is_http_1_0', 'has_dns_query', 'is_html', 'is_text', 'is_binary', 'is_image',
-    'is_form', 'is_udp', 'is_icmp_echo', 'is_icmp_reply', 'is_icmp_unreachable',
-    'is_icmp_packet', 'is_tcp_packet', 'tcp_stream_exists', 'tcp_seq_exists',
-    'tcp_ack_exists', 'tcp_syn', 'tcp_ack', 'tcp_fin', 'tcp_rst', 'tcp_psh',
-    'tcp_urg', 'has_ip_source', 'has_ip_dest', 'ip_flag_df', 'ip_flag_mf',
-    'ip_flag_none', 'is_fragmented', 'is_zero_deltatime', 'pps', 'packet_rate',
-    'icmp_rate', 'icmp_suspicious', 'is_fast_traffic', 'syn_ratio',
-    'small_packet', 'medium_packet', 'large_packet', 'is_common_ttl',
-    'ttl_anomaly', 'ttl_dev'
-]
+BINARY_FEATURES, MULTI_FEATURES = fetch_feature_lists()
+print(f"✅ Fetched feature lists from server: "
+      f"{len(BINARY_FEATURES)} binary | {len(MULTI_FEATURES)} multi")
 
 # ── State ────────────────────────────────────────────────────────
 # [FIX 1+2] بدل last_time[0] العالمي وبدل tcp_stream_map الاتجاهي،

@@ -145,7 +145,7 @@ class MonitorSession(BaseModel):
 # ── 🤖 تحميل موديلات الذكاء الاصطناعي ──────────────────────────────────
 try:
     model_binary = XGBClassifier()
-    model_binary.load_model(os.path.join(BASE_PATH, "model_binary_v6.json"))
+    model_binary.load_model(os.path.join(BASE_PATH, "model_binary_v7.json"))
     model_multi = XGBClassifier()
     model_multi.load_model(os.path.join(BASE_PATH, "model_multi.json"))
 
@@ -153,12 +153,12 @@ try:
     label_encoder_multi = joblib.load(
         os.path.join(BASE_PATH, "label_encoder_multi.pkl"))
     feature_names_bin = joblib.load(os.path.join(
-        BASE_PATH, "feature_names_binary_v6.pkl"))
+        BASE_PATH, "feature_names_binary_v7.pkl"))
     scaler_features = list(scaler.feature_names_in_)
     ordinal_encoders = joblib.load(
         os.path.join(BASE_PATH, "ordinal_encoders.pkl"))
     top_protocols = joblib.load(os.path.join(
-        BASE_PATH, "top_protocols_v6.pkl"))
+        BASE_PATH, "top_protocols_v7.pkl"))
     print(
         f"Models loaded — binary: {len(feature_names_bin)} features | scaler: {len(scaler_features)} features")
 except Exception as e:
@@ -398,7 +398,7 @@ def register(payload: RegisterRequest):
         if cursor.fetchone():
             conn.close()
             raise HTTPException(
-                status_code=409, detail="Email already registered") # 409 --> Conflict
+                status_code=409, detail="Email already registered")
 
         user_id = str(uuid.uuid4())
         password_hash, salt = hash_password(password)
@@ -410,7 +410,7 @@ def register(payload: RegisterRequest):
         conn.close()
         return {"user_id": user_id, "email": email}
     except HTTPException:
-        raise              # raise HTTPException(409) =>Conflict
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -629,7 +629,7 @@ def predict_full(flow: NetworkFlow, _: bool = Depends(verify_device_key)):
 
 
 @app.post("/predict/wireshark-row")
-def predict_wireshark_row(row: dict, _: bool = Depends(verify_device_key)):
+def predict_wireshark_row(row: dict):
     try:
         binary_f, multi_f, protocol = wireshark_row_to_features(row)
         src_ip = str(row.get("IP Source", row.get("Source", "0.0.0.0")))
