@@ -6,7 +6,7 @@ import {
   CartesianGrid, PieChart, Pie, Cell, LineChart, Line, BarChart, Bar,
 } from "recharts";
 import { severityPillClass, ATTACK_TYPES } from "@/lib/mockAttacks";
-
+import { getDetectionLogs } from "@/services/detectionApi";
 export const Route = createFileRoute("/_app/dashboard")({
   component: Dashboard,
   head: () => ({ meta: [{ title: "Dashboard – CyberShield" }] }),
@@ -38,6 +38,7 @@ function Dashboard() {
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
 
   const startTime = useMemo(() => {
+    if (typeof window === 'undefined') return new Date();
     const saved = localStorage.getItem("monitoring_start_time");
     if (saved) return new Date(saved);
     const now = new Date();
@@ -52,11 +53,8 @@ function Dashboard() {
     // 2️⃣ دالة لجلب البيانات من الـ Local SQLite API
     const loadLocalLogs = async () => {
       try {
-        const r = await fetch("http://127.0.0.1:8000/api/logs?limit=500");
-        if (r.ok) {
-          const data = await r.json();
-          setDbAttacks(data ?? []);
-        }
+        const logs = await getDetectionLogs(500);
+        setDbAttacks(logs);
       } catch (err) {
         console.error("Error loading dashboard data from SQLite:", err);
       }
@@ -110,7 +108,7 @@ function Dashboard() {
     return Object.entries(m).filter(([, v]) => v > 0).map(([name, value]) => ({ name, value }));
   }, [attacksOnly]);
 
-  // ── Anomaly Score — REAL DATA ─────────────────────────────────
+  // Anomaly Score — REAL DATA 
   const anomaly = useMemo(() => {
     if (all.length === 0) return [];
     const BUCKETS = 20;

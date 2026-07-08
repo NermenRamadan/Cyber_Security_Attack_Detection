@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { severityPillClass } from "@/lib/mockAttacks";
 import { Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { getDetectionLogs } from "@/services/detectionApi";
 
 export const Route = createFileRoute("/_app/logs")({
   component: Logs,
@@ -22,15 +23,10 @@ function Logs() {
     } catch {}
 
     try {
-      const r = await fetch("http://127.0.0.1:8000/api/logs?limit=500");
-      if (r.ok) {
-        const data = await r.json();
-        const merged = [...local, ...(data ?? [])]
-          .sort((a, b) => new Date(b.detected_at).getTime() - new Date(a.detected_at).getTime());
-        setRows(merged);
-      } else {
-        setRows(local);
-      }
+      const remote = await getDetectionLogs(500);
+      const merged = [...local, ...remote]
+        .sort((a, b) => new Date(b.detected_at).getTime() - new Date(a.detected_at).getTime());
+      setRows(merged);
     } catch (err) {
       console.error("Error fetching logs from local API:", err);
       setRows(local);
