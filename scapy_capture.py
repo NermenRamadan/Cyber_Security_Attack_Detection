@@ -31,6 +31,10 @@ MY_USER_ID = ""   # ← حط الـ user_id بتاعك هنا
 
 API_URL = "http://127.0.0.1:8000/predict/full"
 
+# ── Device Authentication ────────────────────────────────────────
+# نفس المفتاح المحدد في API.py (DEVICE_API_KEY) — لازم يكون مطابق تمامًا
+DEVICE_API_KEY = "depi-project-secret-key-2026"
+
 # ── Feature lists (مطابقة للموديل) ──────────────────────────────
 BINARY_FEATURES = [
     'deltatime', 'ip_flag_df', 'TCP Window Size', 'is_browser',
@@ -416,6 +420,7 @@ def process_packet(pkt):
                 "device_id":       DEVICE_ID,
                 "protocol":        "TCP" if TCP in pkt else "UDP" if UDP in pkt else "ICMP",
             },
+            headers={"X-API-Key": DEVICE_API_KEY},
             timeout=5,
         )
         result = response.json()

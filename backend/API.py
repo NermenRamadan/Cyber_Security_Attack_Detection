@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import numpy as np
@@ -29,9 +29,21 @@ app.add_middleware(
         "http://127.0.0.1:8080",
     ],
     allow_methods=["GET", "POST","DELETE"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key", "X-Device-ID"],
     allow_credentials=True,
 )
+
+# ── Device Authentication (للأجهزة اللي بتبعت traffic، مش للمستخدمين) ──
+# ده مختلف عن الـ JWT بتاع تسجيل دخول المستخدم؛ هنا بنتأكد إن الجهاز
+# اللي بيبعت البيانات (سكريبت الـ Scapy/Wireshark) تابع فعلاً للنظام
+# بتاعنا، مش أي حد عشوائي بيبعت طلبات مزيفة على الـ endpoint.
+DEVICE_API_KEY = os.getenv("DEVICE_API_KEY", "depi-project-secret-key-2026")
+
+
+def verify_device_key(x_api_key: str = Header(None, alias="X-API-Key")):
+    if x_api_key != DEVICE_API_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized device: invalid or missing X-API-Key")
+    return True
 
 BASE_PATH = os.path.join(os.path.dirname(__file__), "..", "notebook", "models")
 BASE_PATH = os.path.abspath(BASE_PATH)
@@ -386,7 +398,7 @@ def register(payload: RegisterRequest):
         if cursor.fetchone():
             conn.close()
             raise HTTPException(
-                status_code=409, detail="Email already registered")
+                status_code=409, detail="Email already registered") # 409 --> Conflict
 
         user_id = str(uuid.uuid4())
         password_hash, salt = hash_password(password)
@@ -398,7 +410,7 @@ def register(payload: RegisterRequest):
         conn.close()
         return {"user_id": user_id, "email": email}
     except HTTPException:
-        raise
+        raise              # raise HTTPException(409) =>Conflict
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -601,7 +613,7 @@ def predict_legacy(flow: NetworkFlowLegacy):
 
 
 @app.post("/predict/full")
-def predict_full(flow: NetworkFlow):
+def predict_full(flow: NetworkFlow, _: bool = Depends(verify_device_key)):
     try:
         return run_prediction(
             binary_features=flow.binary_features,
@@ -617,7 +629,7 @@ def predict_full(flow: NetworkFlow):
 
 
 @app.post("/predict/wireshark-row")
-def predict_wireshark_row(row: dict):
+def predict_wireshark_row(row: dict, _: bool = Depends(verify_device_key)):
     try:
         binary_f, multi_f, protocol = wireshark_row_to_features(row)
         src_ip = str(row.get("IP Source", row.get("Source", "0.0.0.0")))

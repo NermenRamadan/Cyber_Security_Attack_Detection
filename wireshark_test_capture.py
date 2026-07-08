@@ -25,6 +25,10 @@ API_URL          = "http://127.0.0.1:8000/predict/wireshark-row"
 INTERFACE        = "WiFi"      # ← اسم الكارت بالظبط كما ظهر من tshark -D
 CAPTURE_SECONDS  = 120          # دقيقتين تصفح عادي
 
+# ── Device Authentication ────────────────────────────────────────
+# نفس المفتاح المحدد في API.py (DEVICE_API_KEY) — لازم يكون مطابق تمامًا
+DEVICE_API_KEY = "depi-project-secret-key-2026"
+
 # ── Flow tracking لحساب deltatime لكل flow لوحده (زي scapy_capture_fixed.py) ──
 flows = {}              # flow_key -> last_seen timestamp
 FLOW_TIMEOUT = 120.0
@@ -151,7 +155,11 @@ def main():
                 row = build_row(pkt, deltatime)
                 row["user_id"] = ""
 
-                resp = requests.post(API_URL, json=row, timeout=5)
+                resp = requests.post(
+                    API_URL, json=row,
+                    headers={"X-API-Key": DEVICE_API_KEY},
+                    timeout=5,
+                )
                 result = resp.json()
                 count += 1
 

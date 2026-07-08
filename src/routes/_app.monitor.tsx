@@ -38,7 +38,7 @@ function parseCSV(text: string): Record<string, string>[] {
 
 function exportCSV(rows: any[]) {
   if (!rows.length) return;
-  const headers = ["detected_at","source_ip","attack_type","severity","confidence","protocol","solution","status"];
+  const headers = ["detected_at", "source_ip", "attack_type", "severity", "confidence", "protocol", "solution", "status"];
   const lines = [
     headers.join(","),
     ...rows.map((r) =>
@@ -46,26 +46,26 @@ function exportCSV(rows: any[]) {
     ),
   ];
   const blob = new Blob([lines.join("\n")], { type: "text/csv" });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement("a");
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
   a.href = url; a.download = `cybershield_results_${Date.now()}.csv`;
   a.click(); URL.revokeObjectURL(url);
 }
 
 // ── component ─────────────────────────────────────────────────────
 function Monitor() {
-  const navigate    = useNavigate();
-  const [running, setRunning]           = useState(false);
-  const [liveRows, setLiveRows]         = useState<Attack[]>([]);
-  const [csvFile, setCsvFile]           = useState<File | null>(null);
-  const [uploading, setUploading]       = useState(false);
+  const navigate = useNavigate();
+  const [running, setRunning] = useState(false);
+  const [liveRows, setLiveRows] = useState<Attack[]>([]);
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [uploadTotal, setUploadTotal]   = useState(0);
-  const [csvResults, setCsvResults]     = useState<any[]>([]);
-  const [summary, setSummary]           = useState<{total:number,attacks:number,normal:number} | null>(null);
-  const pollRef     = useRef<any>(null);
-  const fileInputRef= useRef<HTMLInputElement>(null);
-  const abortRef    = useRef(false);
+  const [uploadTotal, setUploadTotal] = useState(0);
+  const [csvResults, setCsvResults] = useState<any[]>([]);
+  const [summary, setSummary] = useState<{ total: number, attacks: number, normal: number } | null>(null);
+  const pollRef = useRef<any>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef(false);
 
   useEffect(() => {
     if (!localStorage.getItem("user_id")) {
@@ -75,8 +75,6 @@ function Monitor() {
   }, [navigate]);
 
   // ── live monitor ─────────────────────────────────────────────
-  // ملحوظة: لو عندك سكريبت Scapy منفصل بيبعت الترافيك مباشرة على /predict/full،
-  // لازم هو كمان يبعت user_id بتاع نفس اليوزر عشان اللوجز تتحسب عليه صح.
   const fetchLive = async () => {
     const userId = localStorage.getItem("user_id");
     if (!userId) return;
@@ -109,12 +107,11 @@ function Monitor() {
     if (!userId) { toast.error("Please sign in first"); return; }
     setRunning(true);
     toast.success("Real-time monitoring started");
-    // بنقول للـ API إن الجهاز ده دلوقتي بيراقبه اليوزر ده
     fetch(`${API_URL}/monitor/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_id: userId, device_id: DEVICE_ID }),
-    }).catch(() => {});
+    }).catch(() => { });
     fetchLive();
     pollRef.current = setInterval(fetchLive, 3000);
   };
@@ -124,8 +121,7 @@ function Monitor() {
     pollRef.current = null;
     setRunning(false);
     localStorage.removeItem("monitoring_start_time");
-    // بنشيل ربط الجهاز عشان مايفضلش مسجل على اليوزر ده لما حد يقفل المراقبة
-    fetch(`${API_URL}/monitor/register?device_id=${DEVICE_ID}`, { method: "DELETE" }).catch(() => {});
+    fetch(`${API_URL}/monitor/register?device_id=${DEVICE_ID}`, { method: "DELETE" }).catch(() => { });
     toast.success("Monitoring stopped");
     setTimeout(() => navigate({ to: "/logs" }), 600);
   };
@@ -154,9 +150,8 @@ function Monitor() {
       const rows = parseCSV(text);
       if (rows.length === 0) { toast.error("CSV is empty or invalid"); setUploading(false); return; }
 
-      // detect format — Wireshark CSV has "IP Source" column
       const isWireshark = "IP Source" in rows[0] || "IP Destination" in rows[0];
-      const endpoint    = isWireshark ? "/predict/wireshark-row" : "/predict/csv-row";
+      const endpoint = isWireshark ? "/predict/wireshark-row" : "/predict/csv-row";
       toast.success(`Detected format: ${isWireshark ? "Wireshark" : "Generic"} — processing ${rows.length} rows...`);
 
       const userId = localStorage.getItem("user_id") || "";
@@ -175,17 +170,17 @@ function Monitor() {
           });
           if (res.ok) {
             const result = await res.json();
-            const conf   = result.confidence != null ? parseFloat((result.confidence * 100).toFixed(1)) : null;
-            const entry  = {
+            const conf = result.confidence != null ? parseFloat((result.confidence * 100).toFixed(1)) : null;
+            const entry = {
               detected_at: new Date().toISOString(),
-              source_ip:   row["IP Source"] || row["source_ip"] || "—",
+              source_ip: row["IP Source"] || row["source_ip"] || "—",
               attack_type: result.attack_type,
-              severity:    result.severity,
-              confidence:  conf,
-              protocol:    row["Protocol"] || "TCP",
-              solution:    result.solution || "",
-              status:      result.is_attack ? "detected" : "normal",
-              true_label:  row["label"] || "",
+              severity: result.severity,
+              confidence: conf,
+              protocol: row["Protocol"] || "TCP",
+              solution: result.solution || "",
+              status: result.is_attack ? "detected" : "normal",
+              true_label: row["label"] || "",
             };
             results.push(entry);
             if (result.is_attack) attacks++; else normal++;
@@ -207,14 +202,16 @@ function Monitor() {
   };
 
   const progressPercent = uploadTotal > 0 ? Math.round((uploadProgress / uploadTotal) * 100) : 0;
-  const displayRows     = csvResults.length > 0 ? csvResults : liveRows;
+  const displayRows = csvResults.length > 0 ? csvResults : liveRows;
 
   return (
-    <main className="mx-auto max-w-7xl px-6 py-8">
-      {/* ── header ── */}
-      <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+
+    <main className="mx-auto max-w-7xl px-6 pt-10 pb-8 relative z-10">
+
+      {/* ── header block fixed placement ── */}
+      <div className="mb-8 flex flex-col gap-4 md:flex-row md:items-center md:justify-between border-b border-white/5 pb-4">
         <div>
-          <h1 className="text-3xl font-semibold tracking-tight">Live Monitor</h1>
+          <h1 className="text-3xl font-semibold tracking-tight text-white">Live Monitor</h1>
           <p className="text-sm text-muted-foreground">Real-time packet inspection & CSV analysis</p>
         </div>
         <div className="flex items-center gap-3">
@@ -375,11 +372,10 @@ function Monitor() {
                   </td>
                   <td className="px-5 py-4 font-mono text-sm">{r.source_ip}</td>
                   <td className="px-5 py-4">
-                    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ring-1 ${
-                      r.status === "normal"
+                    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ring-1 ${r.status === "normal"
                         ? "bg-accent/15 text-accent ring-accent/30"
                         : "bg-destructive/15 text-destructive ring-destructive/30"
-                    }`}>{r.status}</span>
+                      }`}>{r.status}</span>
                   </td>
                   <td className="px-5 py-4 font-medium">{r.attack_type}</td>
                   <td className="px-5 py-4 text-muted-foreground">{r.protocol}</td>
@@ -393,15 +389,12 @@ function Monitor() {
                   </td>
                   {csvResults.length > 0 && (
                     <td className="px-5 py-4 text-xs">
-                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${
-                        r.true_label === r.attack_type
+                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${r.true_label === r.attack_type
                           ? "bg-accent/15 text-accent"
                           : r.true_label
-                          ? "bg-yellow-500/15 text-yellow-400"
-                          : "text-muted-foreground"
-                      }`}>
-                        {r.true_label || "—"}
-                      </span>
+                            ? "bg-yellow-500/15 text-yellow-400"
+                            : "text-muted-foreground"
+                        }`}>{r.true_label || "—"}</span>
                     </td>
                   )}
                   <td className="px-5 py-4 text-sm text-muted-foreground max-w-xs truncate">{r.solution}</td>
