@@ -75,6 +75,12 @@ def build_row(pkt, deltatime: float) -> dict:
         "deltatime": deltatime,
         "Length": int(pkt.length),
         "Protocol": getattr(pkt, "highest_layer", "TCP"),
+        # ✅ FIX: لازم نسجل الوقت الحقيقي بنفس اسم العمود اللي نوتبوك v8 بيدور
+        # عليه (Frame Time (Epoch)) — من غيرها، خطوة dropna(subset=[time_col])
+        # في خلية حساب conn_count_10s/rst_ratio_10s كانت بتمسح كل صفوف الملف
+        # ده بالكامل (لأنها معندهاش عمود وقت خالص)، فبيانات الـ Normal الحقيقية
+        # دي كانت بتتشال من التدريب من غير ما حد يلاحظ.
+        "Frame Time (Epoch)": float(pkt.sniff_timestamp),
     }
 
     if hasattr(pkt, "ip"):

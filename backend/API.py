@@ -12,6 +12,8 @@ import pandas as pd
 import uuid
 import hashlib
 import secrets
+import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from typing import Any, List, Optional
@@ -33,10 +35,7 @@ app.add_middleware(
     allow_credentials=True,
 )
 
-# ── Device Authentication (للأجهزة اللي بتبعت traffic، مش للمستخدمين) ──
-# ده مختلف عن الـ JWT بتاع تسجيل دخول المستخدم؛ هنا بنتأكد إن الجهاز
-# اللي بيبعت البيانات (سكريبت الـ Scapy/Wireshark) تابع فعلاً للنظام
-# بتاعنا، مش أي حد عشوائي بيبعت طلبات مزيفة على الـ endpoint.
+# ── Device Authentication ──
 DEVICE_API_KEY = os.getenv("DEVICE_API_KEY", "depi-project-secret-key-2026")
 
 
@@ -55,7 +54,6 @@ DB_FILE = os.path.join(os.path.dirname(__file__), "cyber_security.db")
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    # Detection Logs Table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS detection_logs (
             id TEXT PRIMARY KEY,
@@ -72,7 +70,6 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    # Chat Messages Table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS chat_messages (
             id TEXT PRIMARY KEY,
@@ -82,7 +79,6 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    #  Users Table (For Auth)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
@@ -92,9 +88,6 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    # جدول الـ Active Sessions — بيربط كل device_id باليوزر اللي حالياً بيراقبه لايف
-    # (ده اللي بيخلي سكريبت الـ Scapy، اللي مش عنده مفهوم "تسجيل دخول"، يعرف يبعت
-    # الديتكشنز على حساب اليوزر الصح لما مبيبعتش user_id مباشرة)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS active_sessions (
             device_id TEXT PRIMARY KEY,
@@ -109,12 +102,11 @@ def init_db():
 init_db()
 print("✅ SQLite database initialized successfully!")
 
-# ── 🔐 Auth helpers (hashing بدون أي مكتبات خارجية) ──────────────────────
+# ── 🔐 Auth helpers ──────────────────────
 PBKDF2_ITERATIONS = 260_000
 
 
 def hash_password(password: str, salt: str = None) -> tuple[str, str]:
-    """يرجع (password_hash, salt) كـ hex strings"""
     if salt is None:
         salt = secrets.token_hex(16)
     dk = hashlib.pbkdf2_hmac(
@@ -142,10 +134,31 @@ class MonitorSession(BaseModel):
     user_id: str
     device_id: str = "default-device"
 
+# ── 🧠 ذاكرة مؤقتة لحساب ميزات التكرار لكل IP في الـ Live (v11) ──
+# هيكل البيانات: { ip_source: [ (timestamp, is_rst), ... ] }
+ip_traffic_cache = defaultdict(list)
+
+def calculate_live_rate_features(source_ip: str, is_rst: float) -> tuple[float, float]:
+    """تحسب كم اتصال ونسبة الـ RST لـ IP معين في آخر 10 ثوانٍ لايف"""
+    current_time = time.time()
+    # إضافة الباكت الحالي للـ Cache
+    ip_traffic_cache[source_ip].append((current_time, is_rst))
+    
+    # تنظيف الـ Cache من الباكتس الأقدم من 10 ثوانٍ
+    ip_traffic_cache[source_ip] = [
+        (t, r) for (t, r) in ip_traffic_cache[source_ip] if current_time - t <= 10.0
+    ]
+    
+    conn_count_10s = float(len(ip_traffic_cache[source_ip]))
+    rst_count = sum(r for (_, r) in ip_traffic_cache[source_ip])
+    rst_ratio_10s = float(rst_count / conn_count_10s) if conn_count_10s > 0 else 0.0
+    
+    return conn_count_10s, rst_ratio_10s
+
+
 # ── 🤖 تحميل موديلات الذكاء الاصطناعي ──────────────────────────────────
 try:
-    model_binary = XGBClassifier()
-    model_binary.load_model(os.path.join(BASE_PATH, "model_binary_v7.json"))
+    model_binary = joblib.load(os.path.join(BASE_PATH, "model_binary_v12_fixed.pkl"))
     model_multi = XGBClassifier()
     model_multi.load_model(os.path.join(BASE_PATH, "model_multi.json"))
 
@@ -153,12 +166,12 @@ try:
     label_encoder_multi = joblib.load(
         os.path.join(BASE_PATH, "label_encoder_multi.pkl"))
     feature_names_bin = joblib.load(os.path.join(
-        BASE_PATH, "feature_names_binary_v7.pkl"))
+        BASE_PATH, "feature_names_binary_v12_fixed.pkl"))
     scaler_features = list(scaler.feature_names_in_)
     ordinal_encoders = joblib.load(
         os.path.join(BASE_PATH, "ordinal_encoders.pkl"))
     top_protocols = joblib.load(os.path.join(
-        BASE_PATH, "top_protocols_v7.pkl"))
+        BASE_PATH, "top_protocols_v12_fixed.pkl"))
     print(
         f"Models loaded — binary: {len(feature_names_bin)} features | scaler: {len(scaler_features)} features")
 except Exception as e:
@@ -226,10 +239,6 @@ def safe_float(val: Any, default: float = 0.0) -> float:
 
 
 def resolve_user_id(user_id: str, device_id: str) -> str:
-    """
-    لو الطلب مبعتش user_id مباشر (زي سكريبت الـ Scapy)، بندور على مين هو
-    اليوزر اللي حالياً مسجل إنه بيراقب الـ device_id ده (من جدول active_sessions).
-    """
     if user_id and user_id.strip():
         return user_id.strip()
     if device_id and device_id.strip():
@@ -269,6 +278,8 @@ def run_prediction(binary_features: list, multi_features_dict: dict,
 
     X_bin = pd.DataFrame([binary_features], columns=feature_names_bin)
     proba = model_binary.predict_proba(X_bin)[0][1]
+    
+    # تعديل v11: رفع الـ Threshold لـ 0.5 متوازن لقمع الـ False Alerts الناتجة عن توازن الداتا الجديد
     is_attack = 1 if proba >= 0.35 else 0
 
     try:
@@ -277,15 +288,6 @@ def run_prediction(binary_features: list, multi_features_dict: dict,
     except Exception:
         binary_confidence = None
 
-    # if is_attack == 0:
-    #    result = {
-    #        "is_attack":   False,
-    #        "attack_type": "Normal",
-    #        "severity":    "None",
-    #        "confidence":  binary_confidence,
-    #        "code":        -1,
-    #        "solution":    "",
-    #    }
     if is_attack == 0:
             result = {
                 "is_attack": False,
@@ -323,26 +325,17 @@ def run_prediction(binary_features: list, multi_features_dict: dict,
         except Exception:
             confidence = None
 
-      # result = {
-      #     "is_attack":   True,
-      #     "attack_type": attack_type,
-      #     "severity":    severity,
-      #     "confidence":  confidence,
-      #     "code":        int(pred_num),
-      #     "solution":    solution,
-      # }
-
         result = {
             "is_attack":         True,
             "attack_type":       attack_type,
             "severity":          severity,
             "confidence":        confidence,
-            "binary_confidence": binary_confidence,   # ← جديد
+            "binary_confidence": binary_confidence,
             "code":              int(pred_num),
             "solution":          solution,
         }
 
-    # ── 💾 الحفظ في SQLite بدلاً من Supabase ──────────────────────────
+    # ── 💾 الحفظ في SQLite ──────────────────────────
     try:
         should_save = result["is_attack"]
         if not should_save:
@@ -377,8 +370,7 @@ def run_prediction(binary_features: list, multi_features_dict: dict,
 
     return result
 
-# ── Authentication EndPoints──────────────────────────
-
+# ── Authentication EndPoints ──────────────────────────
 
 @app.post("/auth/register")
 def register(payload: RegisterRequest):
@@ -439,9 +431,6 @@ def login(payload: LoginRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── 🖥️ ربط الجهاز (device_id) باليوزر اللي بيراقبه لايف دلوقتي ───────────
-
-
 @app.post("/monitor/register")
 def register_monitor_session(payload: MonitorSession):
     if not payload.user_id.strip():
@@ -477,8 +466,7 @@ def unregister_monitor_session(device_id: str = "default-device"):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── 🤖 الـ Endpoints الخاصة بـ SentinelAI Agent ──────────────────────────
-
+# ── 🤖 SentinelAI Agent Endpoints ──────────────────────────
 
 @app.post("/api/agent")
 async def sentinel_agent(payload: dict = Body(...)):
@@ -489,7 +477,6 @@ async def sentinel_agent(payload: dict = Body(...)):
 
         KEY = os.environ.get("LOVABLE_API_KEY")
 
-        # ──return mock responses to prevent the application from failing (If the API key is not available)──
         if not KEY:
             if mode == "summary":
                 return {
@@ -508,7 +495,6 @@ async def sentinel_agent(payload: dict = Body(...)):
                     }]
                 }
 
-        # ── الكود الأصلي في حالة وجود الـ Key ──
         ctx = "No recent detections available."
         if logs:
             ctx_lines = []
@@ -550,8 +536,6 @@ async def sentinel_agent(payload: dict = Body(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Endpoint لعرض الـ logs في الـ Frontend
-
 
 @app.get("/api/logs")
 def get_logs(limit: int = 50, user_id: Optional[str] = None):
@@ -576,7 +560,6 @@ def get_logs(limit: int = 50, user_id: Optional[str] = None):
 
 @app.delete("/api/logs")
 def clear_logs(user_id: str):
-    # لازم user_id هنا — عشان محدش يمسح بيانات كل اليوزرز بالغلط
     if not user_id or not user_id.strip():
         raise HTTPException(status_code=400, detail="user_id is required")
     try:
@@ -590,8 +573,6 @@ def clear_logs(user_id: str):
         return {"deleted": deleted}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-# ── 🛠️ بقية الـ Endpoints القديمة كما هي تماماً ──────────────────────────
 
 
 @app.post("/predict")
@@ -650,18 +631,23 @@ def predict_wireshark_row(row: dict):
 @app.post("/predict/csv-row")
 def predict_csv_row(row: dict):
     try:
-        binary_features = [float(row.get(f, 0) or 0)
-                           for f in feature_names_bin]
-        multi_dict = {f: float(row.get(f, 0) or 0) for f in scaler_features}
-        protocol = str(row.get("Protocol", "TCP"))
+        # 💡 الحل السحري: هنمرر الـ row على الدالة اللي بتصلح الفلاجات والـ TTL والـ البروتوكول وتطلع الفيتشرز المظبوطة
+        binary_features, multi_features, protocol = wireshark_row_to_features(row)
+        
+        # لو الـ CSV جاي من الـ Notebook والأسماء متطابقة ومفيهاش نصوص، تقدري تسيبي الكود القديم، 
+        # لكن لو جاي من Wireshark أو فيه نصوص، السطرين اللي فوق دول هم اللي هيحلوا المشكلة فوراً.
+        
+        src_ip = str(row.get("IP Source", row.get("source_ip", "0.0.0.0")))
+        user_id = str(row.get("user_id", ""))
+        device_id = str(row.get("device_id", "csv-upload"))
+        
         return run_prediction(
             binary_features=binary_features,
-            multi_features_dict=multi_dict,
-            source_ip=str(
-                row.get("IP Source", row.get("source_ip", "0.0.0.0"))),
+            multi_features_dict=multi_features,
+            source_ip=src_ip,
             protocol=protocol,
-            user_id=str(row.get("user_id", "")),
-            device_id=str(row.get("device_id", "")),
+            user_id=user_id,
+            device_id=device_id,
         )
     except Exception as e:
         traceback.print_exc()
@@ -698,7 +684,7 @@ def root():
     }
 
 
-def wireshark_row_to_features(row: dict) -> tuple:
+def wireshark_row_to_features(row: dict, is_csv: bool = True) -> tuple:
     protocol = str(row.get("Protocol", "TCP")).strip()
 
     tcp_syn = parse_flag(row.get("TCP SYN Flag", 0))
@@ -748,8 +734,8 @@ def wireshark_row_to_features(row: dict) -> tuple:
     http_uri = str(row.get("HTTP Request URI",    "") or "").strip()
     http_version = str(row.get("HTTP Request Version", "") or "").strip()
     http_resp_code = str(row.get("HTTP Response Code",  "") or "").strip()
-    http_ua = str(row.get("HTTP User-Agent",     "") or "").lower()
-    http_ct = str(row.get("HTTP Content Type",   "") or "").lower()
+    http_ua = str(row.get("HTTP User-Agent",      "") or "").lower()
+    http_ct = str(row.get("HTTP Content Type",    "") or "").lower()
     http_cl = safe_float(row.get("HTTP Content-Length", 0))
 
     is_http_request = 1.0 if http_method else 0.0
@@ -768,38 +754,28 @@ def wireshark_row_to_features(row: dict) -> tuple:
         elif http_resp_code.startswith("5"):
             is_5xx = is_http_error = 1.0
 
-    is_suspicious_method = 1.0 if http_method in [
-        "POST", "OPTIONS", "PROPFIND"] else 0.0
+    is_suspicious_method = 1.0 if http_method in ["POST", "OPTIONS", "PROPFIND"] else 0.0
 
     uri_low = http_uri.lower()
     full_uri = str(row.get("HTTP Full URI", "") or "").lower()
     uri_length = float(len(http_uri))
     uri_path_depth = float(http_uri.count("/"))
     uri_has_params = 1.0 if "?" in http_uri else 0.0
-    uri_has_special = 1.0 if any(c in http_uri for c in [
-                                 "<", ">", '"', "'", ";", "(", ")", "{"]) else 0.0
+    uri_has_special = 1.0 if any(c in http_uri for c in ["<", ">", '"', "'", ";", "(", ")", "{"]) else 0.0
 
-    is_sqli_path = 1.0 if any(k in uri_low for k in [
-                              "'", "union", "select", "drop", "insert", "or 1=1"]) else 0.0
-    is_system_file_attack = 1.0 if any(
-        k in uri_low for k in ["etc/passwd", "win.ini", "../", "..\\"]) else 0.0
+    is_sqli_path = 1.0 if any(k in uri_low for k in ["'", "union", "select", "drop", "insert", "or 1=1"]) else 0.0
+    is_system_file_attack = 1.0 if any(k in uri_low for k in ["etc/passwd", "win.ini", "../", "..\\"]) else 0.0
     has_path_traversal = 1.0 if "../" in http_uri or "..\\" in http_uri else 0.0
     has_admin = 1.0 if "admin" in uri_low else 0.0
 
     combined_uri = full_uri + uri_low
-    has_sql = 1.0 if any(k in combined_uri for k in [
-                         "select ", "union ", "drop ", "insert ", "delete from", "' or"]) else 0.0
-    has_xss = 1.0 if any(k in combined_uri for k in [
-                         "<script", "javascript:", "onerror=", "onload=", "alert("]) else 0.0
+    has_sql = 1.0 if any(k in combined_uri for k in ["select ", "union ", "drop ", "insert ", "delete from", "' or"]) else 0.0
+    has_xss = 1.0 if any(k in combined_uri for k in ["<script", "javascript:", "onerror=", "onload=", "alert("]) else 0.0
 
-    is_attack_tool = 1.0 if any(k in http_ua for k in [
-                                "sqlmap", "ffuf", "fuzz", "apachebench", "nmap", "nikto", "masscan", "hydra", "metasploit"]) else 0.0
-    is_browser = 1.0 if any(k in http_ua for k in [
-                            "mozilla", "chrome", "firefox", "safari", "edge"]) else 0.0
-    is_script = 1.0 if any(k in http_ua for k in [
-                           "python", "curl", "wget", "requests", "go-http"]) else 0.0
-    is_bot = 1.0 if any(k in http_ua for k in [
-                        "bot", "crawler", "spider", "scraper"]) else 0.0
+    is_attack_tool = 1.0 if any(k in http_ua for k in ["sqlmap", "ffuf", "fuzz", "apachebench", "nmap", "nikto", "masscan", "hydra", "metasploit"]) else 0.0
+    is_browser = 1.0 if any(k in http_ua for k in ["mozilla", "chrome", "firefox", "safari", "edge"]) else 0.0
+    is_script = 1.0 if any(k in http_ua for k in ["python", "curl", "wget", "requests", "go-http"]) else 0.0
+    is_bot = 1.0 if any(k in http_ua for k in ["bot", "crawler", "spider", "scraper"]) else 0.0
 
     is_html = 1.0 if "html" in http_ct else 0.0
     is_text = 1.0 if "text" in http_ct else 0.0
@@ -807,8 +783,7 @@ def wireshark_row_to_features(row: dict) -> tuple:
     is_image = 1.0 if "image" in http_ct else 0.0
     is_form = 1.0 if "form" in http_ct else 0.0
 
-    has_dns_query = 1.0 if str(
-        row.get("DNS Query Name", "") or "").strip() else 0.0
+    has_dns_query = 1.0 if str(row.get("DNS Query Name", "") or "").strip() else 0.0
 
     icmp_type = safe_float(row.get("ICMP Type", -1))
     is_icmp_echo = 1.0 if icmp_type == 8 else 0.0
@@ -828,11 +803,20 @@ def wireshark_row_to_features(row: dict) -> tuple:
     tcp_ack_num = safe_float(row.get("TCP Acknowledgment Number", 0))
     tcp_window = safe_float(row.get("TCP Window Size", 0))
 
-    is_fragmented = 1.0 if safe_float(
-        row.get("IP Fragment Offset", 0)) > 0 else 0.0
+    is_fragmented = 1.0 if safe_float(row.get("IP Fragment Offset", 0)) > 0 else 0.0
     syn_ratio = tcp_syn
 
     ip_length = safe_float(row.get("IP Length", 0))
+
+    # ── 🧠 الفصل الذكي الموحد لميزات التكرار الحية بناءً على المصدر ──
+    if is_csv:
+        # لو الداتا جاية من الـ CSV، بنقرأ ميزات التكرار المحسوبة تاريخياً من الملف نفسه عشان الكاش ميتلخبطش
+        conn_count_10s = safe_float(row.get("conn_count_10s", 0.0))
+        rst_ratio_10s = safe_float(row.get("rst_ratio_10s", 0.0))
+    else:
+        # لو الداتا لايف حقيقية من الشبكة، بنشغل دالة الكاش والوقت الفعلي للجهاز
+        src_ip_address = str(row.get("IP Source", row.get("Source", "0.0.0.0")))
+        conn_count_10s, rst_ratio_10s = calculate_live_rate_features(src_ip_address, tcp_rst)
 
     all_f = {
         "Protocol":                    encode_protocol(protocol),
@@ -916,13 +900,14 @@ def wireshark_row_to_features(row: dict) -> tuple:
         "is_common_ttl":               is_common_ttl,
         "ttl_anomaly":                 ttl_anomaly,
         "ttl_dev":                     ttl_dev,
+        "conn_count_10s":              conn_count_10s,
+        "rst_ratio_10s":               rst_ratio_10s,
     }
 
     binary_f = [all_f.get(f, 0.0) for f in feature_names_bin]
     multi_f = {f: float(all_f.get(f, 0.0)) for f in scaler_features}
 
     return binary_f, multi_f, protocol
-
 
 if __name__ == "__main__":
     import uvicorn
