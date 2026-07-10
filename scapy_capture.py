@@ -1,43 +1,18 @@
-"""
-scapy_capture_fixed.py — CyberShield live packet capture (FIXED)
-بيبعت الـ 20 binary features + الـ 73 multi features للـ API
-
-=====================================================================
-الفروقات عن النسخة الأصلية (scapy_capture.py):
-
-1. TCP Stream  -> بقى bidirectional (مش اتجاهي) + بيتعمله reset لو الستريم
-   ساكت لفترة طويلة، عشان منوصلش لأرقام ضخمة غريبة عن التدريب.
-
-2. deltatime   -> بقى per-connection (لكل stream/flow لوحده) مش عالمي على
-   كل التراف��ك. ده أقرب لمنطق التدريب (كل CSV كان فيه نوع ترافيك واحد بس).
-
-3. is_browser / is_attack_tool / is_script -> اتسابوا زي ما هما (الموديل
-   مدرّب عليهم كده) لكن دلوقتي فيه تعليق واضح إنهم هيفضلوا صفر مع HTTPS،
-   وده قيد حقيقي مش حاجة ممكن "نصلحها" من غير إعادة تدريب.
-=====================================================================
-"""
 import time
 import uuid
 import requests
 from scapy.all import sniff, IP, TCP, UDP, DNS, ICMP, Raw
 
 # ── Device ID ────────────────────────────────────────────────────
-def get_device_id():
-    import uuid as _u
-    return str(_u.UUID(int=uuid.getnode()))
-
-DEVICE_ID = get_device_id()
-MY_USER_ID = ""   # ← حط الـ user_id بتاعك هنا
+DEVICE_ID = "scapy-monitor-01"
+MY_USER_ID = ""  
 
 API_URL = "http://127.0.0.1:8000/predict/full"
 
 # ── Device Authentication ────────────────────────────────────────
-# نفس المفتاح المحدد في API.py (DEVICE_API_KEY) — لازم يكون مطابق تمامًا
+# the same key as in API.py (DEVICE_API_KEY) 
 DEVICE_API_KEY = "depi-project-secret-key-2026"
 
-# ── Feature lists (بتتجاب ديناميكيًا من السيرفر، مش مكتوبة يدوي) ──
-# ده بيمنع أي mismatch مستقبلي لو الموديل اتغيّر (v3, v4...) وأنسى
-# أحدّث القايمة هنا يدويًا — السيرفر هو المصدر الوحيد للحقيقة.
 def fetch_feature_lists():
     base_url = API_URL.rsplit("/predict", 1)[0]
     resp = requests.get(f"{base_url}/features", timeout=5)
@@ -50,30 +25,25 @@ print(f"✅ Fetched feature lists from server: "
       f"{len(BINARY_FEATURES)} binary | {len(MULTI_FEATURES)} multi")
 
 # ── State ────────────────────────────────────────────────────────
-# [FIX 1+2] بدل last_time[0] العالمي وبدل tcp_stream_map الاتجاهي،
-# بقى عندنا dict واحد لكل "flow" (اتصال) فيه: رقم الستريم + آخر وقت شوفنا
-# فيه باكت من نفس الـ flow ده.
-#
-# flow_key = tuple bidirectional موحّد لاتجاهين الاتصال
+
 flows = {}            # flow_key -> {"stream_id": int, "last_seen": float}
 stream_id_counter = [0]
 
-FLOW_TIMEOUT = 120.0   # ثانية - لو الـ flow ساكت أكتر من كده، نعتبره خلص ونرجّع رقمه للاستخدام
+FLOW_TIMEOUT = 120.0   
 
-# لحساب الـ rate features (دول لسه عالميين بطبيعتهم - مقصودين كده)
+
 packet_times = []
 icmp_times   = []
 syn_count    = [0]
 total_count  = [0]
-WINDOW       = 5.0   # ثواني للـ rate window
+WINDOW       = 5.0  
 
 COMMON_TTLS  = {32, 64, 128, 255}
 
 
 def get_flow_key(proto, ip_src, ip_dst, src_port, dst_port):
     """
-    [FIX 1] مفتاح bidirectional: نرتب الطرفين عشان (A->B) و(B->A)
-    ياخدوا نفس الـ flow_key بالظبط - زي tcp.stream في Wireshark فعليًا.
+    bidirectional:(A->B) و(B->A)
     """
     endpoint_a = (ip_src, src_port)
     endpoint_b = (ip_dst, dst_port)
@@ -82,14 +52,6 @@ def get_flow_key(proto, ip_src, ip_dst, src_port, dst_port):
 
 
 def get_flow_state(flow_key, now):
-    """
-    [FIX 1+2] يرجع (stream_id, deltatime) للـ flow ده.
-    - لو flow جديد: ياخد رقم جديد، وdeltatime = 0 (أول باكت في الاتصال).
-    - لو flow قديم بس "منتهي" (ساكت أكتر من FLOW_TIMEOUT): نعتبره اتصال
-      جديد فعليًا (زي ما بيحصل في الواقع لما TCP connection يتقفل ويتفتح تاني).
-    - غير كده: deltatime = الفرق من آخر باكت في نفس الـ flow بس (مش كل
-      الترافيك اللي بيمر على الكارت).
-    """
     state = flows.get(flow_key)
 
     if state is None or (now - state["last_seen"]) > FLOW_TIMEOUT:
@@ -103,7 +65,6 @@ def get_flow_state(flow_key, now):
 
 
 def cleanup_old_flows(now):
-    """تنظيف دوري بسيط عشان الـ dict ميكبرش لانهائي على جلسة طويلة."""
     if len(flows) < 5000:
         return
     dead = [k for k, v in flows.items() if (now - v["last_seen"]) > FLOW_TIMEOUT]
@@ -114,7 +75,6 @@ def cleanup_old_flows(now):
 def extract_features(pkt):
     now = time.time()
 
-    # ── Rate tracking (عالمي - ده مقصود، عشان نقيس الحمل الكلي على الكارت) ──
     packet_times.append(now)
     total_count[0] += 1
 
@@ -216,9 +176,7 @@ def extract_features(pkt):
         if IP in pkt and flow_key is None:
             flow_key = get_flow_key("ICMP", ip_src, ip_dst, 0, 0)
 
-    # [FIX 1+2] لو في flow_key (TCP/UDP/ICMP فيها IP)، نجيب stream_id
-    # و deltatime اللي بتاعه هو بس (مش الترافيك كله). غير كده fallback
-    # لـ flow_key عام بناءً على الـ IPs بس.
+  
     if flow_key is None and IP in pkt:
         flow_key = get_flow_key("IP", ip_src, ip_dst, 0, 0)
 
@@ -228,7 +186,6 @@ def extract_features(pkt):
             tcp_stream = sid
             tcp_stream_exists = 1
     else:
-        # باكت من غير IP - حالة نادرة (ARP مثلاً)، منستخدمش deltatime عالمي تاني
         deltatime = 0.0
 
     cleanup_old_flows(now)
@@ -237,14 +194,6 @@ def extract_features(pkt):
     has_dns_query = 1 if DNS in pkt else 0
 
     # ── HTTP ──────────────────────────────────────────────────────
-    # [ملاحظة مهمة] الفيتشرز دي (is_browser, is_attack_tool, is_script,
-    # is_http_*) بتعتمد على إن الـ payload يكون نص HTTP واضح (plaintext).
-    # مع HTTPS (اللي هو الغالبية العظمى من التراف��ك العادي النهاردة) الـ
-    # payload بيكون مشفّر، فالفيتشرز دي هتفضل صفر حتى لو الترافيك طبيعي
-    # 100%. ده قيد حقيقي في تصميم الموديل نفسه ومش حاجة ينصلح من كود
-    # الالتقاط - الحل الجذري إنك تضيف traffic عادي HTTPS لداتاسيت
-    # التدريب وتدّي الموديل فرصة يتعلم باترن "Normal" غير قائم على HTTP
-    # plaintext بس.
     is_http_response = is_http_request = is_http_1_0 = 0
     is_http_success  = is_http_error   = is_http_redirect = 0
     is_2xx = is_3xx = is_4xx = is_5xx  = 0
@@ -424,7 +373,8 @@ def process_packet(pkt):
         #    print(f"🔴 ATTACK | {result['attack_type']:20s} | {result['severity']:8s} | {conf_str} | {pkt[IP].src}")
         #else:
         #    print(f"🟢 Normal |                      |          | {conf_str} | {pkt[IP].src}")
-
+        if result.get("attack_type") in ("PortScanning", "DDoS_RAW"):
+             print("   DEBUG:", {k: v for k, v in zip(BINARY_FEATURES, binary_features) if v != 0})
     except Exception as e:
         print(f"Error: {e}")
 

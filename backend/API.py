@@ -275,7 +275,6 @@ def run_prediction(binary_features: list, multi_features_dict: dict,
     X_bin = pd.DataFrame([binary_features], columns=feature_names_bin)
     proba = model_binary.predict_proba(X_bin)[0][1]
     
-    # تعديل v11: رفع الـ Threshold لـ 0.5 متوازن لقمع الـ False Alerts الناتجة عن توازن الداتا الجديد
     is_attack = 1 if proba >= 0.35 else 0
 
     try:
@@ -331,13 +330,15 @@ def run_prediction(binary_features: list, multi_features_dict: dict,
             "solution":          solution,
         }
 
-    # ── 💾 الحفظ في SQLite ──────────────────────────
+    # ── SQLite ──────────────────────────
     try:
-        should_save = result["is_attack"]
-        if not should_save:
-            normal_counter[0] += 1
-            if normal_counter[0] % 10 == 0:
-                should_save = True
+        # should_save = result["is_attack"]
+        # if not should_save:
+        #     normal_counter[0] += 1
+        #     if normal_counter[0] % 10 == 0:
+        #         should_save = True
+
+        should_save = True
 
         if should_save:
             final_user_id = resolve_user_id(user_id, device_id)
@@ -556,11 +557,9 @@ def predict_wireshark_row(row: dict):
 @app.post("/predict/csv-row")
 def predict_csv_row(row: dict):
     try:
-        # 💡 الحل السحري: هنمرر الـ row على الدالة اللي بتصلح الفلاجات والـ TTL والـ البروتوكول وتطلع الفيتشرز المظبوطة
         binary_features, multi_features, protocol = wireshark_row_to_features(row)
         
-        # لو الـ CSV جاي من الـ Notebook والأسماء متطابقة ومفيهاش نصوص، تقدري تسيبي الكود القديم، 
-        # لكن لو جاي من Wireshark أو فيه نصوص، السطرين اللي فوق دول هم اللي هيحلوا المشكلة فوراً.
+       
         
         src_ip = str(row.get("IP Source", row.get("source_ip", "0.0.0.0")))
         user_id = str(row.get("user_id", ""))
@@ -579,14 +578,14 @@ def predict_csv_row(row: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/health")
-def health_check():
-    return {
-        "status":          "CyberShield AI API is running with SQLite",
-        "binary_features": len(feature_names_bin),
-        "scaler_features": len(scaler_features),
-        "top_protocols":   top_protocols,
-    }
+#@app.get("/health")
+#def health_check():
+#    return {
+#        "status":          "CyberShield AI API is running with SQLite",
+#        "binary_features": len(feature_names_bin),
+#        "scaler_features": len(scaler_features),
+#        "top_protocols":   top_protocols,
+#    }
 
 
 @app.get("/features")
@@ -733,13 +732,11 @@ def wireshark_row_to_features(row: dict, is_csv: bool = True) -> tuple:
 
     ip_length = safe_float(row.get("IP Length", 0))
 
-    # ── 🧠 الفصل الذكي الموحد لميزات التكرار الحية بناءً على المصدر ──
+   
     if is_csv:
-        # لو الداتا جاية من الـ CSV، بنقرأ ميزات التكرار المحسوبة تاريخياً من الملف نفسه عشان الكاش ميتلخبطش
         conn_count_10s = safe_float(row.get("conn_count_10s", 0.0))
         rst_ratio_10s = safe_float(row.get("rst_ratio_10s", 0.0))
     else:
-        # لو الداتا لايف حقيقية من الشبكة، بنشغل دالة الكاش والوقت الفعلي للجهاز
         src_ip_address = str(row.get("IP Source", row.get("Source", "0.0.0.0")))
         conn_count_10s, rst_ratio_10s = calculate_live_rate_features(src_ip_address, tcp_rst)
 
