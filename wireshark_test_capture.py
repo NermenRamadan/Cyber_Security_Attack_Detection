@@ -1,41 +1,26 @@
-"""
-wireshark_test_capture.py — اختبار تشخيصي
-========================================
-بيستخدم tshark (مش Scapy) عشان يستخرج فيتشرز حقيقية مطابقة لطريقة
-تدريب الموديل بالظبط (TCP Stream الحقيقي من Wireshark، Frame Time الحقيقي،
-إلخ)، ويبعتها لـ /predict/wireshark-row.
 
-الهدف: نفصل المشكلة. لو النتيجة لسه غلط (XSS على تصفح عادي) رغم إننا
-بنستخدم بيانات Wireshark حقيقية 100% -> المشكلة في الموديل نفسه (leakage).
-لو النتيجة بقت صح -> المشكلة كانت في طريقة استخراج الفيتشرز بـ Scapy.
-
-التشغيل: شغّله كـ Administrator (لازم صلاحيات عشان الـ live capture يشتغل
-على Windows مع Npcap).
-"""
 import os
 import time
 import requests
 import pyshark
 
-# ── مسار tshark.exe (عدّله لو مختلف عندك) ────────────────────────
+
 TSHARK_PATH = r"D:\Wireshark\tshark.exe"
 
-# ── إعدادات ──────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────
 API_URL          = "http://127.0.0.1:8000/predict/wireshark-row"
-INTERFACE        = "WiFi"      # ← اسم الكارت بالظبط كما ظهر من tshark -D
-CAPTURE_SECONDS  = 120          # دقيقتين تصفح عادي
+INTERFACE        = "WiFi"      # tshark -D
+CAPTURE_SECONDS  = 120          # 2 minutes 
 
 # ── Device Authentication ────────────────────────────────────────
-# نفس المفتاح المحدد في API.py (DEVICE_API_KEY) — لازم يكون مطابق تمامًا
+#  the same key in API.py (DEVICE_API_KEY) — 
 DEVICE_API_KEY = "depi-project-secret-key-2026"
 
-# ── Flow tracking لحساب deltatime لكل flow لوحده (زي scapy_capture_fixed.py) ──
 flows = {}              # flow_key -> last_seen timestamp
 FLOW_TIMEOUT = 120.0
 
 
 def get_flow_key(pkt) -> tuple:
-    """مفتاح bidirectional موحّد للـ flow، زي منطق get_flow_key في scapy_capture_fixed.py"""
     if not hasattr(pkt, "ip"):
         return ("no-ip",)
 
@@ -74,10 +59,10 @@ def get_flow_deltatime(pkt, now: float) -> float:
 
 
 def build_row(pkt, deltatime: float) -> dict:
-    """يبني dict بنفس أسامي الأعمدة اللي الـ API بتاع wireshark_row_to_features متوقعها."""
+   
     row = {"deltatime": deltatime, "Length": int(pkt.length)}
 
-    # أقرب حاجة لعمود "Protocol" في واجهة Wireshark
+    
     row["Protocol"] = getattr(pkt, "highest_layer", "TCP")
 
     if hasattr(pkt, "ip"):
@@ -96,7 +81,7 @@ def build_row(pkt, deltatime: float) -> dict:
         row["TCP Sequence Number"]       = getattr(t, "seq", 0)
         row["TCP Acknowledgment Number"] = getattr(t, "ack", 0)
         row["TCP Window Size"]           = getattr(t, "window_size", 0)
-        # ده tcp.stream الحقيقي من Wireshark - bidirectional وموثوق فيه 100%
+    
         row["TCP Stream"]                = getattr(t, "stream", 0)
         row["TCP Flags"]                 = getattr(t, "flags", "0x000")
         row["TCP SYN Flag"]              = getattr(t, "flags_syn", "0")

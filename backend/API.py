@@ -7,7 +7,6 @@ import os
 import warnings
 import traceback
 import sqlite3
-import httpx
 import pandas as pd
 import uuid
 import hashlib
@@ -134,17 +133,14 @@ class MonitorSession(BaseModel):
     user_id: str
     device_id: str = "default-device"
 
-# ── 🧠 ذاكرة مؤقتة لحساب ميزات التكرار لكل IP في الـ Live (v11) ──
-# هيكل البيانات: { ip_source: [ (timestamp, is_rst), ... ] }
 ip_traffic_cache = defaultdict(list)
 
 def calculate_live_rate_features(source_ip: str, is_rst: float) -> tuple[float, float]:
-    """تحسب كم اتصال ونسبة الـ RST لـ IP معين في آخر 10 ثوانٍ لايف"""
+  
     current_time = time.time()
-    # إضافة الباكت الحالي للـ Cache
+
     ip_traffic_cache[source_ip].append((current_time, is_rst))
-    
-    # تنظيف الـ Cache من الباكتس الأقدم من 10 ثوانٍ
+
     ip_traffic_cache[source_ip] = [
         (t, r) for (t, r) in ip_traffic_cache[source_ip] if current_time - t <= 10.0
     ]
@@ -156,7 +152,7 @@ def calculate_live_rate_features(source_ip: str, is_rst: float) -> tuple[float, 
     return conn_count_10s, rst_ratio_10s
 
 
-# ── 🤖 تحميل موديلات الذكاء الاصطناعي ──────────────────────────────────
+# ── load Models ──────────────────────────────────
 try:
     model_binary = joblib.load(os.path.join(BASE_PATH, "model_binary_v12_fixed.pkl"))
     model_multi = XGBClassifier()
@@ -466,77 +462,6 @@ def unregister_monitor_session(device_id: str = "default-device"):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── 🤖 SentinelAI Agent Endpoints ──────────────────────────
-
-@app.post("/api/agent")
-async def sentinel_agent(payload: dict = Body(...)):
-    try:
-        messages = payload.get("messages", [])
-        mode = payload.get("mode", "chat")
-        logs = payload.get("logs", [])
-
-        KEY = os.environ.get("LOVABLE_API_KEY")
-
-        if not KEY:
-            if mode == "summary":
-                return {
-                    "choices": [{
-                        "message": {
-                            "content": "## Executive Summary\nSentinelAI has detected low-to-medium risk network anomalies over the local session. Traffic volume is stable.\n\n## Top Threats\n- Port scanning attempts from local mock framework.\n\n## Recommended Actions (numbered, prioritized)\n1. Enable strict local firewall filtering.\n2. Review system access credentials.\n\n## Response Playbook\nStandard perimeter containment rules have been applied automatically."
-                        }
-                    }]
-                }
-            else:
-                return {
-                    "choices": [{
-                        "message": {
-                            "content": "Hello! I am SentinelAI, running in local preview mode because LOVABLE_API_KEY is not configured yet. Your SQLite logging and models are active and running perfectly!"
-                        }
-                    }]
-                }
-
-        ctx = "No recent detections available."
-        if logs:
-            ctx_lines = []
-            for l in logs[:25]:
-                ctx_lines.append(
-                    f"- [{l.get('severity')}] {l.get('attack_type')} via {l.get('protocol')} from {l.get('source_ip')} (conf {l.get('confidence')}%)")
-            ctx = f"Recent detections (most recent first):\n" + \
-                "\n".join(ctx_lines)
-
-        system_chat = f"You are SentinelAI, a senior SOC analyst. Be concise, technical, and actionable.\nYou have access to recent detection telemetry below. Reference specific events when relevant.\n{ctx}"
-        system_summary = f"You are SentinelAI. Generate a crisp incident report from the telemetry below.\nOutput sections: ## Executive Summary, ## Top Threats, ## Recommended Actions (numbered, prioritized), ## Response Playbook.\nTelemetry:\n{ctx}"
-
-        if mode == "summary":
-            body = {
-                "model": "google/gemini-3-flash-preview",
-                "messages": [
-                    {"role": "system", "content": system_summary},
-                    {"role": "user", "content": "Generate the incident report now."}
-                ]
-            }
-        else:
-            body = {
-                "model": "google/gemini-3-flash-preview",
-                "messages": [{"role": "system", "content": system_chat}] + messages
-            }
-
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://ai.gateway.lovable.dev/v1/chat/completions",
-                headers={"Authorization": f"Bearer {KEY}",
-                         "Content-Type": "application/json"},
-                json=body,
-                timeout=60.0
-            )
-            if response.status_code != 200:
-                raise HTTPException(status_code=500, detail="AI gateway error")
-            return response.json()
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.get("/api/logs")
 def get_logs(limit: int = 50, user_id: Optional[str] = None):
     try:
@@ -679,7 +604,7 @@ def root():
         "message":   "CyberShield AI API (SQLite Local Version)",
         "endpoints": ["/health", "/predict", "/predict/full",
                       "/predict/wireshark-row", "/predict/csv-row",
-                      "/api/agent", "/api/logs", "/features",
+                       "/api/logs", "/features",
                       "/auth/register", "/auth/login", "/docs"],
     }
 
