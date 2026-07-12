@@ -484,6 +484,30 @@ def get_logs(limit: int = 50, user_id: Optional[str] = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/logs/stats")
+def get_logs_stats(user_id: Optional[str] = None):
+    """عدّاد حقيقي من الداتابيز كلها، مش محدود بـ limit زي /api/logs."""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        if user_id and user_id.strip():
+            cursor.execute("SELECT COUNT(*) FROM detection_logs WHERE user_id = ?", (user_id,))
+            total = cursor.fetchone()[0]
+            cursor.execute(
+                "SELECT COUNT(*) FROM detection_logs WHERE user_id = ? AND status = 'detected'",
+                (user_id,))
+            attacks = cursor.fetchone()[0]
+        else:
+            cursor.execute("SELECT COUNT(*) FROM detection_logs")
+            total = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM detection_logs WHERE status = 'detected'")
+            attacks = cursor.fetchone()[0]
+        conn.close()
+        return {"total_traffic": total, "total_attacks": attacks, "total_normal": total - attacks}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.delete("/api/logs")
 def clear_logs(user_id: str):
     if not user_id or not user_id.strip():

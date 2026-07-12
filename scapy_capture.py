@@ -11,7 +11,7 @@ API_URL = "http://127.0.0.1:8000/predict/full"
 
 # ── Device Authentication ────────────────────────────────────────
 # the same key as in API.py (DEVICE_API_KEY) 
-DEVICE_API_KEY = "depi-project-secret-key-2026"
+DEVICE_API_KEY = "depi-project-secret-key-2026"  # auth key
 
 def fetch_feature_lists():
     base_url = API_URL.rsplit("/predict", 1)[0]
@@ -32,8 +32,8 @@ stream_id_counter = [0]
 FLOW_TIMEOUT = 120.0   
 
 
-packet_times = []
-icmp_times   = []
+packet_times = []   # packets per second
+icmp_times   = []   
 syn_count    = [0]
 total_count  = [0]
 WINDOW       = 5.0  
@@ -366,15 +366,20 @@ def process_packet(pkt):
         #confidence = result.get("confidence")
         #conf_str   = f"{confidence * 100:.1f}%" if confidence is not None else "N/A"
         if result.get("is_attack"):
-            print(f"🔴 ATTACK | {result['attack_type']:20s} | {result['severity']:8s} | multi={conf_str} | bin={bin_str} | {pkt[IP].src}")
+            print(f"🔴 ATTACK | {result['attack_type']:20s} | {result['severity']:8s} | {pkt[IP].src}")
         else:
-            print(f"🟢 Normal |                      |          | bin={bin_str} | {pkt[IP].src}")
+            print(f"🟢 Normal |                      |          | {pkt[IP].src}")
+        
+        #if result.get("is_attack"):
+        #    print(f"🔴 ATTACK | {result['attack_type']:20s} | {result['severity']:8s} | multi={conf_str} | bin={bin_str} | {pkt[IP].src}")
+        #else:
+        #    print(f"🟢 Normal |                      |          | bin={bin_str} | {pkt[IP].src}")
         #if result.get("is_attack"):
         #    print(f"🔴 ATTACK | {result['attack_type']:20s} | {result['severity']:8s} | {conf_str} | {pkt[IP].src}")
         #else:
         #    print(f"🟢 Normal |                      |          | {conf_str} | {pkt[IP].src}")
-        if result.get("attack_type") in ("PortScanning", "DDoS_RAW"):
-             print("   DEBUG:", {k: v for k, v in zip(BINARY_FEATURES, binary_features) if v != 0})
+       # if result.get("attack_type") in ("PortScanning", "DDoS_RAW"):
+        #     print("   DEBUG:", {k: v for k, v in zip(BINARY_FEATURES, binary_features) if v != 0})
     except Exception as e:
         print(f"Error: {e}")
 

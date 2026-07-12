@@ -13,14 +13,11 @@ export const Route = createFileRoute("/_app/dashboard")({
   head: () => ({ meta: [{ title: "Dashboard – CyberShield" }] }),
 });
 
-// عنوان الـ Backend (API.py) — عدّليه لو شغال على بورت أو دومين مختلف
 const API_URL = "http://localhost:8000";
 
-// خريطة العالم (topojson) — ملف عام مجاني بيتحمّل مرة واحدة ويتخزن في الكاش
 const GEO_URL = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
 
-// إحداثيات "المركز" اللي الهجمات بتوصله (سيرفرك) — عدّليها لموقعك الحقيقي
-const HOME_COORDS: [number, number] = [31.2357, 30.0444]; // Cairo, Egypt
+const HOME_COORDS: [number, number] = [31.2357, 30.0444];
 
 const CHART_COLORS = ["#5fb6ff", "#7fd0ff", "#5dd8b8", "#f5c870", "#f08585", "#a78bfa"];
 
@@ -96,6 +93,7 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
 function Dashboard() {
   const navigate = useNavigate();
   const [dbAttacks, setDbAttacks] = useState<any[]>([]);
+  const [totalStats, setTotalStats] = useState<{ total_traffic: number; total_attacks: number } | null>(null);
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
   const [geoCache, setGeoCache] = useState<Record<string, { lat: number; lon: number; country?: string }>>({});
 
@@ -107,7 +105,6 @@ function Dashboard() {
     return now;
   }, []);
 
-  // ── جلب اللوجز بتاعة اليوزر الحالي بس من الـ API (بدل Supabase) ──────
   useEffect(() => {
     const userId = localStorage.getItem("user_id");
     if (!userId) {
@@ -123,7 +120,15 @@ function Dashboard() {
         const data = await res.json();
         if (!cancelled) setDbAttacks(data);
       } catch {
-        // الـ API مش شغالة دلوقتي — بنسيب آخر بيانات معروفة زي ما هي
+      }
+
+      try {
+        const statsRes = await fetch(`${API_URL}/api/logs/stats?user_id=${userId}`);
+        if (statsRes.ok) {
+          const stats = await statsRes.json();
+          if (!cancelled) setTotalStats(stats);
+        }
+      } catch {
       }
     };
 
@@ -147,7 +152,6 @@ function Dashboard() {
     return `Last ${Math.floor(diff / 60)} hour${Math.floor(diff / 60) > 1 ? "s" : ""}`;
   }, [startTime, currentTime]);
 
-  // ── Attacks Over Time ─────────────────────────────────────────
   const overTime = useMemo(() => {
     const buckets: Record<string, number> = {};
     for (let i = 11; i >= 0; i--) {
@@ -162,7 +166,6 @@ function Dashboard() {
     return Object.entries(buckets).map(([time, count]) => ({ time, count }));
   }, [attacksOnly]);
 
-  // ── Attack Distribution ───────────────────────────────────────
   const distribution = useMemo(() => {
     const m: Record<string, number> = {};
     ATTACK_TYPES.forEach((t) => (m[t] = 0));
@@ -170,7 +173,6 @@ function Dashboard() {
     return Object.entries(m).filter(([, v]) => v > 0).map(([name, value]) => ({ name, value }));
   }, [attacksOnly]);
 
-  // ── Anomaly Score ──────────────────────────────────────────────
   const anomaly = useMemo(() => {
     if (all.length === 0) return [];
     const BUCKETS = 20;
@@ -191,7 +193,6 @@ function Dashboard() {
     });
   }, [all]);
 
-  // ── Security Score (100 - متوسط نسبة الهجمات في آخر فترة) ─────
   const securityScore = useMemo(() => {
     if (anomaly.length === 0) return 100;
     const recent = anomaly.slice(-6);
@@ -203,7 +204,6 @@ function Dashboard() {
     securityScore >= 90 ? "Excellent" : securityScore >= 75 ? "Good" : securityScore >= 50 ? "Fair" : "At Risk";
   const scoreColor = securityScore >= 75 ? "#5dd8b8" : securityScore >= 50 ? "#f5c870" : "#f08585";
 
-  // ── Response Efficiency ────────────────────────────────────────
   const efficiency = useMemo(() => {
     if (attacksOnly.length === 0) return [];
     return attacksOnly.slice(0, 10).reverse().map((r, i) => ({
@@ -213,7 +213,6 @@ function Dashboard() {
     }));
   }, [attacksOnly]);
 
-  // ── Attack Sources ────────────────────────────────────────────
   const sources = useMemo(() => {
     const m: Record<string, number> = {};
     attacksOnly.forEach((a: any) => {
@@ -224,7 +223,6 @@ function Dashboard() {
       .sort((a, b) => b.value - a.value).slice(0, 12);
   }, [attacksOnly]);
 
-  // ── Geolocation للـ IPs العامة بس (الـ private/internal مالهاش لازمة) ──
   useEffect(() => {
     const toFetch = sources
       .map((s) => s.name)
@@ -245,7 +243,6 @@ function Dashboard() {
             }));
           }
         } catch {
-          // rate-limited أو IP مش موجود على ipapi.co — بنتجاهله
         }
       }
     })();
@@ -263,7 +260,6 @@ function Dashboard() {
     [sources]
   );
 
-  // ── Avg confidence ────────────────────────────────────────────
   const avgConfidence = useMemo(() => {
     const withConf = attacksOnly.filter((r) => r.confidence != null);
     if (!withConf.length) return null;
@@ -288,9 +284,8 @@ function Dashboard() {
         </div>
       </div>
 
-      {/* stat cards */}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <StatCard icon={Activity} label="Total Alerts" value={detected.toLocaleString()} hint={durationText} accent="primary" trend={overTimeCounts} />
+        <StatCard icon={Activity} label="Total Alerts" value={(totalStats?.total_traffic ?? detected).toLocaleString()} hint={durationText} accent="primary" trend={overTimeCounts} />
         <StatCard icon={AlertTriangle} label="Active Attacks" value={attackCount} hint={durationText} accent="destructive" trend={overTimeCounts} critical={attackCount > 0} />
         <StatCard icon={ShieldCheck} label="Avg Confidence" value={avgConfidence != null ? `${avgConfidence}%` : "—"} hint={avgConfidence != null ? "Model certainty on attacks" : "No attacks yet"} accent="accent" />
         <div className="glass relative flex items-center justify-between overflow-hidden rounded-2xl p-5">
@@ -303,7 +298,6 @@ function Dashboard() {
         </div>
       </div>
 
-      {/* live attack map + critical alert */}
       <div className="mt-4 grid gap-4 lg:grid-cols-3">
         <div className="glass rounded-2xl p-5 lg:col-span-2">
           <div className="mb-3 flex items-center justify-between">
@@ -402,7 +396,6 @@ function Dashboard() {
         )}
       </div>
 
-      {/* distribution + attacks over time */}
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <div className="glass rounded-2xl p-5">
           <h3 className="mb-1 text-base font-medium">Attack Type Distribution</h3>
@@ -456,7 +449,6 @@ function Dashboard() {
         </div>
       </div>
 
-      {/* recent alerts + anomaly timeline */}
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <div className="glass rounded-2xl p-5">
           <h3 className="mb-4 text-base font-medium">Recent Alerts</h3>
@@ -503,7 +495,6 @@ function Dashboard() {
         </div>
       </div>
 
-      {/* sources + confidence */}
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <div className="glass rounded-2xl p-5">
           <h3 className="mb-1 text-base font-medium">Top Attack Sources</h3>

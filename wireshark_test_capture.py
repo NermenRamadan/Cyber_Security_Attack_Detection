@@ -45,7 +45,7 @@ def get_flow_key(pkt) -> tuple:
 
 
 def get_flow_deltatime(pkt, now: float) -> float:
-    """deltatime محسوبة لكل flow لوحده، مش على كل الترافيك مع بعض."""
+   
     key = get_flow_key(pkt)
     last_seen = flows.get(key)
 
